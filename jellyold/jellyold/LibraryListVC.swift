@@ -66,7 +66,13 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     }
 
     private func showAlert(_ msg: String) {
+        #if IOS6_TARGET
         let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
+#else
+        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+#endif
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { libraries.count }

@@ -31,9 +31,15 @@ class HTTPClient {
     }
 
     private static func send(_ request: URLRequest, completion: @escaping (Data?, Error?) -> Void) {
+#if IOS6_TARGET
         NSURLConnection.sendAsynchronousRequest(request, queue: OperationQueue.main) { _, data, error in
             completion(data, error)
         }
+#else
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            DispatchQueue.main.async { completion(data, error) }
+        }.resume()
+#endif
     }
 
     private static func makeError(_ message: String) -> NSError {

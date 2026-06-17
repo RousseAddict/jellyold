@@ -1,11 +1,21 @@
 import UIKit
-import MediaPlayer
 import AVFoundation
+#if IOS6_TARGET
+import MediaPlayer
+#else
+import AVKit
+#endif
 
 class VideoPlayerVC: UIViewController {
     private let item: MediaItem
-    private var player: MPMoviePlayerController?
     private var bufferSpinner: UIActivityIndicatorView!
+
+#if IOS6_TARGET
+    private var player: MPMoviePlayerController?
+#else
+    private var avPlayer: AVPlayer?
+    private var playerVC: AVPlayerViewController?
+#endif
 
     private var isAudio: Bool { item.type == "Audio" }
 
@@ -15,7 +25,6 @@ class VideoPlayerVC: UIViewController {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    // iOS 7+: tell the system to keep status bar hidden for video
     override var prefersStatusBarHidden: Bool { return !isAudio }
 
     override func viewDidLoad() {
@@ -40,21 +49,32 @@ class VideoPlayerVC: UIViewController {
         super.viewDidAppear(animated)
         if isAudio {
             let navBottom = navigationController?.navigationBar.frame.maxY ?? 64
+#if IOS6_TARGET
             player?.view.frame = CGRect(x: 0, y: navBottom, width: view.bounds.width,
                                         height: view.bounds.height - navBottom)
+#else
+            playerVC?.view.frame = CGRect(x: 0, y: navBottom, width: view.bounds.width,
+                                          height: view.bounds.height - navBottom)
+#endif
         }
+#if IOS6_TARGET
         player?.play()
+#else
+        avPlayer?.play()
+#endif
         restorePosition()
     }
 
-    // Fires on every rotation — keeps video truly fullscreen in any orientation
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         guard !isAudio else { return }
-        // Re-assert hidden so status bar doesn't flash back on rotation
         UIApplication.shared.setStatusBarHidden(true, with: .none)
+#if IOS6_TARGET
         player?.view.frame = view.bounds
         bufferSpinner.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+#else
+        playerVC?.view.frame = view.bounds
+#endif
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -65,9 +85,15 @@ class VideoPlayerVC: UIViewController {
         }
         savePosition()
         NotificationCenter.default.removeObserver(self)
+#if IOS6_TARGET
         player?.stop()
+#else
+        avPlayer?.pause()
+#endif
         try? AVAudioSession.sharedInstance().setActive(false)
     }
+
+    // MARK: - Common setup
 
     private func activateAudioSession() {
         try? AVAudioSession.sharedInstance().setCategory(.playback)
@@ -85,11 +111,10 @@ class VideoPlayerVC: UIViewController {
         artView.load(url: "\(serverURL)/Items/\(item.id)/Images/Primary?width=600")
     }
 
-    private func setupPlayer() {
+    private func buildStreamURL() -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken,
-              let userId = JellyfinServer.userId else { return }
-
+              let userId = JellyfinServer.userId else { return nil }
         let urlString: String
         if isAudio {
             let params = [
@@ -114,10 +139,15 @@ class VideoPlayerVC: UIViewController {
             ].joined(separator: "&")
             urlString = "\(serverURL)/Videos/\(item.id)/master.m3u8?\(params)"
         }
+        return URL(string: urlString)
+    }
 
-        guard let url = URL(string: urlString),
+    // MARK: - iOS 6/7 player
+
+#if IOS6_TARGET
+    private func setupPlayer() {
+        guard let url = buildStreamURL(),
               let player = MPMoviePlayerController(contentURL: url) else { return }
-
         player.view.frame = view.bounds
         player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         player.controlStyle = isAudio ? .embedded : .fullscreen
@@ -126,7 +156,6 @@ class VideoPlayerVC: UIViewController {
         view.addSubview(player.view)
         player.prepareToPlay()
         self.player = player
-
         NotificationCenter.default.addObserver(self, selector: #selector(playbackFinished),
             name: NSNotification.Name.MPMoviePlayerPlaybackDidFinish, object: player)
         NotificationCenter.default.addObserver(self, selector: #selector(loadStateChanged),
@@ -152,8 +181,6 @@ class VideoPlayerVC: UIViewController {
         }
     }
 
-    private var resumeKey: String { "resume_\(item.id)" }
-
     private func savePosition() {
         guard let player = player else { return }
         let t = player.currentPlaybackTime
@@ -167,6 +194,52 @@ class VideoPlayerVC: UIViewController {
             self?.player?.currentPlaybackTime = saved
         }
     }
+
+    // MARK: - iOS 8/9 player
+
+#else
+    private func setupPlayer() {
+        guard let url = buildStreamURL() else { return }
+        let avPlayer = AVPlayer(url: url)
+        self.avPlayer = avPlayer
+        let playerVC = AVPlayerViewController()
+        playerVC.player = avPlayer
+        playerVC.showsPlaybackControls = true
+        if isAudio { playerVC.view.backgroundColor = .clear }
+        addChild(playerVC)
+        playerVC.view.frame = view.bounds
+        playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(playerVC.view)
+        playerVC.didMove(toParent: self)
+        self.playerVC = playerVC
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackFinished),
+            name: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: avPlayer.currentItem)
+    }
+
+    // AVPlayerViewController provides its own loading indicator
+    private func setupBufferSpinner() {
+        bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
+    }
+
+    private func savePosition() {
+        guard let avPlayer = avPlayer else { return }
+        let t = avPlayer.currentTime().seconds
+        if t > 10 { UserDefaults.standard.set(t, forKey: resumeKey) }
+    }
+
+    private func restorePosition() {
+        let saved = UserDefaults.standard.double(forKey: resumeKey)
+        guard saved > 10 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let player = self?.avPlayer else { return }
+            player.seek(to: CMTime(seconds: saved, preferredTimescale: 1000))
+        }
+    }
+#endif
+
+    // MARK: - Shared
+
+    private var resumeKey: String { "resume_\(item.id)" }
 
     @objc private func playbackFinished(_ notification: Notification) {
         UserDefaults.standard.removeObject(forKey: resumeKey)

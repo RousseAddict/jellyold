@@ -147,11 +147,17 @@ class ServerSetupVC: UIViewController {
     }
 
     private func showAlert(_ message: String) {
+#if IOS6_TARGET
         let alert = UIAlertView()
         alert.title = "JellyOld"
         alert.message = message
         alert.addButton(withTitle: "OK")
         alert.show()
+#else
+        let alert = UIAlertController(title: "JellyOld", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+#endif
     }
 }
 

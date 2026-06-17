@@ -16,7 +16,7 @@ private let sortOptions: [SortOption] = [
 
 // MARK: - ItemListVC
 
-class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UIActionSheetDelegate {
+class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
 
     private let library: Library
     private var collectionView: UICollectionView!
@@ -105,6 +105,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     // MARK: - Sorting
 
     @objc private func sortTapped() {
+#if IOS6_TARGET
         let sheet = UIActionSheet(
             title: "Sort by",
             delegate: self,
@@ -114,14 +115,21 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         // Cancel is at index 0; options are added starting at index 1
         for opt in sortOptions { sheet.addButton(withTitle: opt.title) }
         sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Sort by", message: nil, preferredStyle: .actionSheet)
+        for (i, opt) in sortOptions.enumerated() {
+            alert.addAction(UIAlertAction(title: opt.title, style: .default) { [weak self] _ in
+                self?.applySortIndex(i)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
     }
 
-    func actionSheet(_ actionSheet: UIActionSheet, clickedButtonAt buttonIndex: Int) {
-        guard buttonIndex != actionSheet.cancelButtonIndex else { return }
-        let sortIndex = buttonIndex - 1  // cancel occupies index 0
-        guard sortIndex >= 0 && sortIndex < sortOptions.count else { return }
-        currentSortIndex = sortIndex
-        UserDefaults.standard.set(sortIndex, forKey: sortKey)
+    func applySortIndex(_ index: Int) {
+        currentSortIndex = index
+        UserDefaults.standard.set(index, forKey: sortKey)
         fetchItems()
     }
 
@@ -152,13 +160,10 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         case "tvshows":
             typeFilter = "&IncludeItemTypes=Series"
         case "music":
-            // Show MusicArtist at top level — same as what Jellyfin returns naturally
             typeFilter = ""
         case "musicArtist":
-            // Albums inside an artist
             typeFilter = "&IncludeItemTypes=MusicAlbum"
         case "musicAlbum":
-            // Tracks inside an album
             typeFilter = "&IncludeItemTypes=Audio"
         case "playlists":
             typeFilter = "&IncludeItemTypes=Playlist"
@@ -196,7 +201,13 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     }
 
     private func showAlert(_ msg: String) {
+#if IOS6_TARGET
         let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
+#else
+        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+#endif
     }
 
     // MARK: - DataSource
@@ -244,7 +255,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         return CGSize(width: side, height: side * 1.5)
     }
 
-    // MARK: - Delegate
+    // MARK: - Selection
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         let item = items[indexPath.item]
@@ -265,3 +276,16 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         }
     }
 }
+
+// MARK: - UIActionSheetDelegate (iOS 6/7 only)
+
+#if IOS6_TARGET
+extension ItemListVC: UIActionSheetDelegate {
+    func actionSheet(_ actionSheet: UIActionSheet, clickedButtonAt buttonIndex: Int) {
+        guard buttonIndex != actionSheet.cancelButtonIndex else { return }
+        let sortIndex = buttonIndex - 1  // cancel occupies index 0
+        guard sortIndex >= 0 && sortIndex < sortOptions.count else { return }
+        applySortIndex(sortIndex)
+    }
+}
+#endif
