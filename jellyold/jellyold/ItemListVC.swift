@@ -158,7 +158,10 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         case "movies":
             typeFilter = "&IncludeItemTypes=Movie"; recursive = "true"
         case "tvshows":
-            typeFilter = "&IncludeItemTypes=Series"
+            // No type filter: custom/unmapped content may not be type "Series".
+            // Recursive=false shows the top-level items (Series, Folder, or Video)
+            // whatever structure Jellyfin built from the files.
+            typeFilter = ""; recursive = "false"
         case "music":
             typeFilter = ""
         case "musicArtist":
@@ -167,6 +170,9 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             typeFilter = "&IncludeItemTypes=Audio"
         case "playlists":
             typeFilter = "&IncludeItemTypes=Playlist"
+        case "folder":
+            // Generic folder drill-down (e.g. from a tvshows library subfolder)
+            typeFilter = ""; recursive = "false"
         default:
             typeFilter = "&IncludeItemTypes=Movie,Series"; recursive = "true"
         }
@@ -262,6 +268,10 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         switch item.type {
         case "Series":
             navigationController?.pushViewController(SeasonListVC(series: item), animated: true)
+        case "Folder", "CollectionFolder":
+            // Drill into generic folders (e.g. custom TV content not parsed as Series)
+            let child = Library(id: item.id, name: item.name, collectionType: "folder")
+            navigationController?.pushViewController(ItemListVC(library: child), animated: true)
         case "MusicArtist":
             let child = Library(id: item.id, name: item.name, collectionType: "musicArtist")
             navigationController?.pushViewController(ItemListVC(library: child), animated: true)

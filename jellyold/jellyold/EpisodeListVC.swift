@@ -1,5 +1,7 @@
 import UIKit
 
+// MARK: - EpisodeCell
+
 class EpisodeCell: UICollectionViewCell {
     let thumbView = AsyncImageView()
     let numberLabel = UILabel()
@@ -62,25 +64,36 @@ class EpisodeCell: UICollectionViewCell {
     }
 }
 
+// MARK: - EpisodeListVC
+
 class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
 
     private let series: MediaItem
-    private let season: MediaItem
+    private let season: MediaItem?   // nil = all episodes across all seasons
     private var episodes: [MediaItem] = []
     private var collectionView: UICollectionView!
     private var spinner: UIActivityIndicatorView!
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
 
+    // All episodes for a series (flat, sorted by season then episode)
+    init(series: MediaItem) {
+        self.series = series
+        self.season = nil
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    // Episodes for a specific season
     init(series: MediaItem, season: MediaItem) {
         self.series = series
         self.season = season
         super.init(nibName: nil, bundle: nil)
     }
+
     required init?(coder: NSCoder) { fatalError() }
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = season.name
+        title = season?.name ?? series.name
         view.backgroundColor = bgColor
         setupCollectionView()
         setupSpinner()
@@ -112,7 +125,15 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         guard let serverURL = JellyfinServer.serverURL,
               let userId = JellyfinServer.userId else { return }
         spinner.startAnimating()
-        let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(season.id)&Fields=Overview,IndexNumber,ParentIndexNumber"
+        let url: String
+        if let season = season {
+            // Specific season: fetch direct children of the season
+            url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(season.id)&Fields=Overview,IndexNumber,ParentIndexNumber"
+        } else {
+            // All episodes: use the dedicated Shows endpoint which returns all episodes
+            // sorted by season and episode number
+            url = "\(serverURL)/Shows/\(series.id)/Episodes?UserId=\(userId)&Fields=Overview,IndexNumber,ParentIndexNumber&Limit=500"
+        }
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             guard let self = self else { return }
             self.spinner.stopAnimating()
@@ -120,7 +141,7 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let its = json["Items"] as? [[String: Any]] else {
-                self.showAlert("Could not parse episodes."); return
+                self.showAlert("Could not load episodes."); return
             }
             self.episodes = its.compactMap { MediaItem(json: $0) }
             self.collectionView.reloadData()
@@ -128,7 +149,7 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     }
 
     private func showAlert(_ msg: String) {
-        #if IOS6_TARGET
+#if IOS6_TARGET
         let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
 #else
         let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
@@ -142,7 +163,8 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "EpisodeCell", for: indexPath) as! EpisodeCell
         let ep = episodes[indexPath.item]
-        let seasonNum = season.indexNumber ?? (ep.parentIndexNumber ?? 1)
+        // Use parentIndexNumber (season number) from each episode when showing all seasons
+        let seasonNum = season?.indexNumber ?? ep.parentIndexNumber ?? 1
         cell.configure(episode: ep, seasonNumber: seasonNum)
         return cell
     }
