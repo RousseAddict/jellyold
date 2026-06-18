@@ -29,4 +29,22 @@ class JellyfinAPI {
             completion(true, nil)
         }
     }
+
+    // MARK: - Media Streams
+
+    static func getMediaStreams(itemId: String, completion: @escaping ([MediaStream]) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion([]); return }
+        let url = "\(serverURL)/Users/\(userId)/Items/\(itemId)"
+        HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { data, _ in
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let sources = json["MediaSources"] as? [[String: Any]],
+                  let first = sources.first,
+                  let streams = first["MediaStreams"] as? [[String: Any]] else {
+                completion([]); return
+            }
+            completion(streams.compactMap { MediaStream(json: $0) })
+        }
+    }
 }

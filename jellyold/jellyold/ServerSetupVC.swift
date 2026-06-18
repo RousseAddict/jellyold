@@ -7,6 +7,8 @@ class ServerSetupVC: UIViewController {
     private var passwordField: UITextField!
     private var connectButton: UIButton!
     private var spinner: UIActivityIndicatorView!
+    private var topOffset: CGFloat = 0
+    private var didBuildUI = false
 
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
     private let accentColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1.0)
@@ -15,35 +17,58 @@ class ServerSetupVC: UIViewController {
         super.viewDidLoad()
         title = "JellyOld"
         view.backgroundColor = bgColor
-        buildUI()
         registerKeyboardObservers()
+#if IOS6_TARGET
+        // iOS 6/7: nav bar is opaque, view starts below it automatically — build immediately
+        buildUI()
+#endif
+    }
+
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+#if !IOS6_TARGET
+        // Read nav bar bottom once the nav stack is fully wired up
+        topOffset = navigationController?.navigationBar.frame.maxY ?? 64
+#endif
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+#if !IOS6_TARGET
+        // iOS 8/9: build UI once, after topOffset has been set in viewWillAppear
+        guard !didBuildUI, topOffset > 0 else { return }
+        didBuildUI = true
+        buildUI()
+#endif
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
     private func buildUI() {
         let w = view.bounds.width
+        let top = topOffset   // 0 on iOS 6 (opaque bar), nav bar bottom on iOS 8
 
-        // Logo — transparent PNG bundled directly (not xcassets — iOS 6 compatible)
         let logoSize: CGFloat = 110
-        let logoView = UIImageView(frame: CGRect(x: (w - logoSize) / 2, y: 20, width: logoSize, height: logoSize))
+        let logoView = UIImageView(frame: CGRect(x: (w - logoSize) / 2, y: top + 20,
+                                                  width: logoSize, height: logoSize))
         logoView.image = UIImage(named: "Logo@2x")
         logoView.contentMode = .scaleAspectFit
         logoView.backgroundColor = .clear
         view.addSubview(logoView)
 
-        serverField = makeField("Server URL  (e.g. http://192.168.1.10:8096)", y: 150, secure: false)
+        serverField = makeField("Server URL  (e.g. http://192.168.1.10:8096)",
+                                y: top + 150, secure: false)
         serverField.keyboardType = .URL
         view.addSubview(serverField)
 
-        usernameField = makeField("Username", y: 208, secure: false)
+        usernameField = makeField("Username", y: top + 208, secure: false)
         view.addSubview(usernameField)
 
-        passwordField = makeField("Password", y: 266, secure: true)
+        passwordField = makeField("Password", y: top + 266, secure: true)
         view.addSubview(passwordField)
 
         connectButton = UIButton(type: .custom)
-        connectButton.frame = CGRect(x: 20, y: 330, width: w - 40, height: 46)
+        connectButton.frame = CGRect(x: 20, y: top + 330, width: w - 40, height: 46)
         connectButton.setTitle("Connect", for: .normal)
         connectButton.setTitleColor(.white, for: .normal)
         connectButton.setTitleColor(UIColor(white: 1.0, alpha: 0.5), for: .disabled)
@@ -53,8 +78,9 @@ class ServerSetupVC: UIViewController {
         connectButton.addTarget(self, action: #selector(connectTapped), for: .touchUpInside)
         view.addSubview(connectButton)
 
+        let visibleMidY = top + (view.bounds.height - top) / 2
         spinner = UIActivityIndicatorView(style: .whiteLarge)
-        spinner.center = CGPoint(x: w / 2, y: view.bounds.midY)
+        spinner.center = CGPoint(x: w / 2, y: visibleMidY)
         spinner.hidesWhenStopped = true
         view.addSubview(spinner)
     }
@@ -92,23 +118,16 @@ class ServerSetupVC: UIViewController {
     }
 
     @objc private func keyboardWillShow(_ notification: Notification) {
+        guard connectButton != nil else { return }
         guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-
         let screenHeight = UIScreen.main.bounds.height
-        let keyboardHeight = keyboardFrame.height
-        let visibleBottom = screenHeight - keyboardHeight
-
-        // Shift just enough so the Connect button stays 16pt above the keyboard
+        let visibleBottom = screenHeight - keyboardFrame.height
         let contentBottom = connectButton.frame.maxY + 16
         let needed = contentBottom - visibleBottom
         guard needed > 0 else { return }
-
-        // Don't re-animate if already shifted
         guard view.frame.origin.y == 0 else { return }
-        UIView.animate(withDuration: duration) {
-            self.view.frame.origin.y = -needed
-        }
+        UIView.animate(withDuration: duration) { self.view.frame.origin.y = -needed }
     }
 
     @objc private func keyboardWillHide(_ notification: Notification) {

@@ -10,6 +10,10 @@ class VideoPlayerVC: UIViewController {
     private let item: MediaItem
     private var bufferSpinner: UIActivityIndicatorView!
 
+    private var selectedAudioIndex: Int?        // Jellyfin stream index — AudioStreamIndex URL param
+    private var selectedSubtitleIndex: Int?     // Jellyfin stream index — SubtitleStreamIndex URL param
+    private var forceTranscode: Bool            // forces Jellyfin to transcode and honour stream index params
+
 #if IOS6_TARGET
     private var player: MPMoviePlayerController?
 #else
@@ -19,8 +23,14 @@ class VideoPlayerVC: UIViewController {
 
     private var isAudio: Bool { item.type == "Audio" }
 
-    init(item: MediaItem) {
+    init(item: MediaItem,
+         audioIndex: Int? = nil,
+         subtitleIndex: Int? = nil,
+         forceTranscode: Bool = false) {
         self.item = item
+        self.selectedAudioIndex = audioIndex
+        self.selectedSubtitleIndex = subtitleIndex
+        self.forceTranscode = forceTranscode
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -111,6 +121,8 @@ class VideoPlayerVC: UIViewController {
         artView.load(url: "\(serverURL)/Items/\(item.id)/Images/Primary?width=600")
     }
 
+    // MARK: - Stream URL
+
     private func buildStreamURL() -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken,
@@ -129,15 +141,30 @@ class VideoPlayerVC: UIViewController {
             ].joined(separator: "&")
             urlString = "\(serverURL)/Audio/\(item.id)/universal?\(params)"
         } else {
-            let params = [
+            var params = [
                 "api_key=\(token)",
                 "MediaSourceId=\(item.id)",
                 "DeviceId=jellyold-device-01",
                 "MaxStreamingBitrate=8000000",
                 "VideoCodec=h264",
                 "AudioCodec=aac"
-            ].joined(separator: "&")
-            urlString = "\(serverURL)/Videos/\(item.id)/master.m3u8?\(params)"
+            ]
+            if forceTranscode {
+                // A unique PlaySessionId prevents Jellyfin reusing a cached direct-stream
+                // session for the same DeviceId, which would silently ignore the params.
+                let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+                params.append("PlaySessionId=\(sessionId)")
+                params.append("EnableDirectStream=false")
+                params.append("EnableDirectPlay=false")
+                if let audioIdx = selectedAudioIndex {
+                    params.append("AudioStreamIndex=\(audioIdx)")
+                }
+                if let subIdx = selectedSubtitleIndex {
+                    params.append("SubtitleStreamIndex=\(subIdx)")
+                    params.append("SubtitleMethod=Encode")
+                }
+            }
+            urlString = "\(serverURL)/Videos/\(item.id)/master.m3u8?\(params.joined(separator: "&"))"
         }
         return URL(string: urlString)
     }
@@ -216,8 +243,8 @@ class VideoPlayerVC: UIViewController {
             name: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: avPlayer.currentItem)
     }
 
-    // AVPlayerViewController provides its own loading indicator
     private func setupBufferSpinner() {
+        // AVPlayerViewController provides its own loading indicator
         bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
     }
 
