@@ -11,6 +11,31 @@ private let curlDataWriteCallback: @convention(c) (UnsafeRawPointer?, Int, Int, 
     return bytes
 }
 
+// Accumulates a file download into an open FileHandle, passed via userdata.
+private let curlFileWriteCallback: @convention(c) (UnsafeRawPointer?, Int, Int, UnsafeMutableRawPointer?) -> Int = { ptr, size, nmemb, userdata in
+    guard let ptr = ptr, let userdata = userdata else { return 0 }
+    let bytes = size * nmemb
+    let box = Unmanaged<CurlDownloadBox>.fromOpaque(userdata).takeUnretainedValue()
+    box.fileHandle?.write(Data(bytes: ptr, count: bytes))
+    box.bytesReceived += Int64(bytes)
+    return bytes
+}
+
+// Reports download progress (0...1) back to the main thread.
+private let curlProgressCallback: @convention(c) (UnsafeMutableRawPointer?, Int64, Int64, Int64, Int64) -> Int32 = { clientp, dltotal, dlnow, _, _ in
+    guard let clientp = clientp, dltotal > 0 else { return 0 }
+    let box = Unmanaged<CurlDownloadBox>.fromOpaque(clientp).takeUnretainedValue()
+    let progress = Float(dlnow) / Float(dltotal)
+    DispatchQueue.main.async { box.progressHandler?(progress) }
+    return 0
+}
+
+private class CurlDownloadBox {
+    var fileHandle: FileHandle?
+    var bytesReceived: Int64 = 0
+    var progressHandler: ((Float) -> Void)?
+}
+
 // MARK: - CurlFetcher
 //
 // libcurl + embedded OpenSSL transport. Bypasses iOS 6 Secure Transport, which
@@ -24,6 +49,9 @@ class CurlFetcher {
     // Serial queue — serial prevents concurrent curl_easy_init before global init.
     // curl_global_init is NOT thread-safe; concurrent implicit calls via curl_easy_init crash.
     private static let curlQueue = DispatchQueue(label: "com.jellyold.curl")
+    // Dedicated serial queue for file downloads, kept separate from curlQueue so a
+    // multi-GB movie download never blocks API calls or thumbnail fetches.
+    private static let downloadQueue = DispatchQueue(label: "com.jellyold.curl.download")
     // Thread-safe once-init: Swift static let uses dispatch_once. The first
     // background thread to touch this runs curl_global_init exactly once.
     // Never run from the main thread (crashes — OpenSSL threading init).
@@ -59,6 +87,23 @@ class CurlFetcher {
             DispatchQueue.main.async {
                 release(fetcher)
                 completion(data)
+            }
+        }
+    }
+
+    // Download url -> local file with progress, on the dedicated download queue;
+    // completion on the main thread. Used by DownloadManager.
+    static func downloadToFile(url: String,
+                               outputPath: String,
+                               progress: ((Float) -> Void)?,
+                               completion: @escaping (Bool) -> Void) {
+        let fetcher = CurlFetcher()
+        retain(fetcher)
+        CurlFetcher.downloadQueue.async {
+            let ok = fetcher.syncDownload(url: url, outputPath: outputPath, progress: progress)
+            DispatchQueue.main.async {
+                release(fetcher)
+                completion(ok)
             }
         }
     }
@@ -137,5 +182,40 @@ class CurlFetcher {
         let code = curl_bridge_response_code(h)
         guard code >= 200, code < 300 else { return nil }
         return buf as Data
+    }
+
+    // No CURLOPT_TIMEOUT (secs: 0 = unbounded) — movie downloads can run far longer
+    // than an API call, and a total-time cap would abort a large file mid-transfer.
+    private func syncDownload(url: String, outputPath: String, progress: ((Float) -> Void)?) -> Bool {
+        _ = CurlFetcher.curlGlobalInit
+        let h = curl_bridge_init()
+        defer { curl_bridge_cleanup(h) }
+
+        FileManager.default.createFile(atPath: outputPath, contents: nil, attributes: nil)
+        guard let fh = FileHandle(forWritingAtPath: outputPath) else { return false }
+        let box = CurlDownloadBox()
+        box.fileHandle = fh
+        box.progressHandler = progress
+        let boxPtr = Unmanaged.passUnretained(box).toOpaque()
+
+        url.withCString { curl_bridge_set_url(h, $0) }
+        curl_bridge_set_ssl_noverify(h)
+        curl_bridge_set_follow_redirects(h)
+        curl_bridge_set_timeout(h, 0)
+        curl_bridge_set_write_fn(h, curlFileWriteCallback, boxPtr)
+        if progress != nil { curl_bridge_set_progress_fn(h, curlProgressCallback, boxPtr) }
+
+        let rc = curl_bridge_perform(h)
+        fh.closeFile()
+        guard rc == 0 else {
+            try? FileManager.default.removeItem(atPath: outputPath)
+            return false
+        }
+        let code = curl_bridge_response_code(h)
+        guard code >= 200, code < 300 else {
+            try? FileManager.default.removeItem(atPath: outputPath)
+            return false
+        }
+        return box.bytesReceived > 0
     }
 }

@@ -124,6 +124,10 @@ class VideoPlayerVC: UIViewController {
     // MARK: - Stream URL
 
     private func buildStreamURL() -> URL? {
+        // Offline copy takes priority over any remote stream.
+        if DownloadManager.isDownloaded(item.id) {
+            return URL(fileURLWithPath: DownloadManager.filePath(for: item.id))
+        }
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken,
               let userId = JellyfinServer.userId else { return nil }
