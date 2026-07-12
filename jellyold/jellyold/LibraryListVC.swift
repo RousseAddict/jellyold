@@ -16,6 +16,9 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             title: "Logout", style: .plain, target: self, action: #selector(logoutTapped)
         )
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "Downloads", style: .plain, target: self, action: #selector(downloadsTapped)
+        )
         fetchLibraries()
     }
 
@@ -63,6 +66,10 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     @objc private func logoutTapped() {
         JellyfinServer.clear()
         navigationController?.setViewControllers([ServerSetupVC()], animated: true)
+    }
+
+    @objc private func downloadsTapped() {
+        navigationController?.pushViewController(DownloadsVC(), animated: true)
     }
 
     private func showAlert(_ msg: String) {
