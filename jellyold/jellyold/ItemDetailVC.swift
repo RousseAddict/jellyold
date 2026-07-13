@@ -54,6 +54,7 @@ class ItemDetailVC: UIViewController {
     private var defaultAudioIndex: Int?     // the server-reported default, for the "Original" check
     private var selectedSubtitleIndex: Int?
     private var forceTranscode = false
+    private var fileInfo: MediaFileInfo?
 
     private var downloadBtn: UIButton?
     private var downloadPollTimer: Timer?
@@ -80,17 +81,21 @@ class ItemDetailVC: UIViewController {
         scrollView.backgroundColor = bgColor
         view.addSubview(scrollView)
 
-        if item.type != "Audio" {
-            JellyfinAPI.getMediaStreams(itemId: item.id) { [weak self] streams in
-                guard let self = self else { return }
-                self.mediaStreams = streams
+        // Fetched for every item type (including Audio) — the file-metadata section at the
+        // bottom of the page needs size/date/container regardless of media type, even though
+        // the audio/subtitle track pickers above it only apply to video.
+        JellyfinAPI.getMediaInfo(itemId: item.id) { [weak self] streams, info in
+            guard let self = self else { return }
+            self.mediaStreams = streams
+            self.fileInfo = info
+            if self.item.type != "Audio" {
                 let audioStreams = streams.filter { $0.isAudio }
                 if let def = audioStreams.first(where: { $0.isDefault }) ?? audioStreams.first {
                     self.selectedAudioIndex = def.index
                     self.defaultAudioIndex = def.index
                 }
-                DispatchQueue.main.async { self.forceRebuild() }
             }
+            DispatchQueue.main.async { self.forceRebuild() }
         }
     }
 
@@ -252,8 +257,60 @@ class ItemDetailVC: UIViewController {
             }
         }
 
+        y = buildFileMetadata(y: y, width: w)
+
         y += 30
         scrollView.contentSize = CGSize(width: w, height: y)
+    }
+
+    // Small metadata block (size / date added / container+codec) at the bottom of the page.
+    // Each line only appears if the server actually returned that field. Returns the updated y.
+    private func buildFileMetadata(y: CGFloat, width w: CGFloat) -> CGFloat {
+        guard let info = fileInfo else { return y }
+        var lines: [String] = []
+        if let size = info.sizeBytes {
+            lines.append("File size: \(DownloadManager.formatBytes(Double(size)))")
+        }
+        if let date = info.dateCreated {
+            let df = DateFormatter()
+            df.dateStyle = .medium
+            df.timeStyle = .none
+            lines.append("Added: \(df.string(from: date))")
+        }
+        let formatParts = [info.container?.uppercased(), info.videoCodec.map(ItemDetailVC.codecLabel)].compactMap { $0 }
+        if !formatParts.isEmpty {
+            lines.append("Format: \(formatParts.joined(separator: " \u{00b7} "))")
+        }
+        guard !lines.isEmpty else { return y }
+
+        var y = y + 8
+        let divider = UIView(frame: CGRect(x: 16, y: y, width: w - 32, height: 1))
+        divider.backgroundColor = UIColor(white: 1.0, alpha: 0.1)
+        scrollView.addSubview(divider)
+        y += 1 + 14
+
+        let label = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 0))
+        label.text = lines.joined(separator: "\n")
+        label.textColor = UIColor(white: 0.45, alpha: 1.0)
+        label.backgroundColor = .clear
+        label.font = UIFont.systemFont(ofSize: 12)
+        label.textAlignment = .center
+        label.numberOfLines = 0
+        label.sizeToFit()
+        label.frame = CGRect(x: 16, y: y, width: w - 32, height: label.frame.height)
+        scrollView.addSubview(label)
+        y += label.frame.height
+        return y
+    }
+
+    private static func codecLabel(_ raw: String) -> String {
+        let known = [
+            "h264": "H.264", "avc": "H.264",
+            "hevc": "HEVC", "h265": "HEVC",
+            "av1": "AV1", "vp9": "VP9", "vp8": "VP8",
+            "mpeg4": "MPEG-4", "mpeg2video": "MPEG-2", "vc1": "VC-1"
+        ]
+        return known[raw.lowercased()] ?? raw.uppercased()
     }
 
     private func makeTrackButton(_ title: String, y: CGFloat, width w: CGFloat) -> UIButton {

@@ -106,15 +106,20 @@ class DownloadManager {
             .filter { fileExists($0.id) }
     }
 
-    // Human-readable file size, e.g. "1.4 GB"
-    static func fileSizeText(for itemId: String) -> String {
-        let path = filePath(for: itemId)
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              let bytes = (attrs[.size] as? NSNumber)?.doubleValue else { return "" }
+    // Human-readable file size, e.g. "1.4 GB". Shared with ItemDetailVC's metadata section
+    // so the source file's size (before download) formats identically to a downloaded copy.
+    static func formatBytes(_ bytes: Double) -> String {
         let gb = bytes / (1024.0 * 1024.0 * 1024.0)
         if gb >= 1 { return String(format: "%.2f GB", gb) }
         let mb = bytes / (1024.0 * 1024.0)
         return String(format: "%.1f MB", mb)
+    }
+
+    static func fileSizeText(for itemId: String) -> String {
+        let path = filePath(for: itemId)
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+              let bytes = (attrs[.size] as? NSNumber)?.doubleValue else { return "" }
+        return formatBytes(bytes)
     }
 
     private static func rawList() -> [[String: Any]] {
