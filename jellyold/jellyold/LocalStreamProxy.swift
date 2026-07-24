@@ -45,15 +45,20 @@ final class LocalStreamProxy: NSObject {
         currentGen += 1
         let gen = currentGen
         lock.unlock()
-        guard ensureStarted() else { return nil }
+        guard ensureStarted() else {
+            DebugLog.shared.log("Proxy", "start FAILED (socket unavailable) — caller will use the direct URL, TLS unprotected")
+            return nil
+        }
         let isPlaylist = remoteURL.pathExtension.lowercased() == "m3u8"
         let path = registerPath(for: remoteURL, isPlaylist: isPlaylist, gen: gen)
+        DebugLog.shared.log("Proxy", "start gen=\(gen) \(path) -> \(DebugLog.redact(remoteURL.absoluteString))")
         return URL(string: "http://127.0.0.1:\(port)\(path)")
     }
 
     func stop() {
         lock.lock()
         guard started else { lock.unlock(); return }
+        DebugLog.shared.log("Proxy", "stop (gen \(currentGen) -> \(currentGen + 1)), \(routes.count) route(s) dropped")
         started = false
         currentGen += 1
         let fd = listenSocket
@@ -166,18 +171,26 @@ final class LocalStreamProxy: NSObject {
         defer { close(fd) }
         let gen = generation
         guard let head = readRequestHead(fd), let (path, rangeHeader) = parseRequest(head) else {
+            DebugLog.shared.log("Proxy", "REQ unparseable request head — answering 400")
             sendStatusOnly(fd, "400 Bad Request")
             return
         }
         guard let remote = route(for: path) else {
+            DebugLog.shared.log("Proxy", "REQ \(path) -> 404 (no such route; \(routeCount) registered)")
             sendStatusOnly(fd, "404 Not Found")
             return
         }
+        DebugLog.shared.log("Proxy", "REQ \(path)\(rangeHeader.map { " [\($0)]" } ?? "") -> \(DebugLog.redact(remote.absoluteString))")
         if path.hasSuffix(".m3u8") {
-            servePlaylist(remote: remote, gen: gen, clientFd: fd)
+            servePlaylist(remote: remote, gen: gen, path: path, clientFd: fd)
         } else {
-            streamRemote(remote, gen: gen, rangeHeader: rangeHeader, clientFd: fd)
+            streamRemote(remote, gen: gen, path: path, rangeHeader: rangeHeader, clientFd: fd)
         }
+    }
+
+    private var routeCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return routes.count
     }
 
     // Reads until the blank line that ends an HTTP request head. Bounded so a
@@ -217,12 +230,17 @@ final class LocalStreamProxy: NSObject {
 
     // MARK: - Playlists (buffered — small text, needs full parsing to rewrite URIs)
 
-    private func servePlaylist(remote: URL, gen: UInt64, clientFd: Int32) {
+    private func servePlaylist(remote: URL, gen: UInt64, path: String, clientFd: Int32) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         guard let data = CurlFetcher.fetchSyncData(url: remote.absoluteString) else {
-            DebugLog.shared.log("Proxy", "playlist fetch failed for \(remote.absoluteString)")
+            // fetchSyncData returns nil for a transport error OR a non-2xx
+            // status — a TLS handshake failure lands here.
+            DebugLog.shared.log("Proxy", "PLAYLIST \(path) FETCH FAILED after \(ms(since: t0))ms (transport error or non-2xx) \(DebugLog.redact(remote.absoluteString))")
             sendStatusOnly(clientFd, "502 Bad Gateway")
             return
         }
+        DebugLog.shared.log("Proxy", "PLAYLIST \(path) fetched \(data.count)B in \(ms(since: t0))ms")
+        logPlaylistContents(data, path: path)
         let body = rewritePlaylist(data, baseURL: remote, gen: gen)
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         guard LocalStreamProxy.sendAll(clientFd, Array(head.utf8)) else { return }
@@ -231,6 +249,34 @@ final class LocalStreamProxy: NSObject {
                 _ = LocalStreamProxy.sendAll(clientFd, base.assumingMemoryBound(to: UInt8.self), body.count)
             }
         }
+    }
+
+    // Logs what the server actually returned: the variant/codec declarations
+    // and segment count. Playback failing on one device but not another is
+    // usually a codec/profile the older device can't decode, so these lines
+    // are the ones to compare between two devices' logs.
+    private func logPlaylistContents(_ data: Data, path: String) {
+        guard let text = String(data: data, encoding: .utf8) else {
+            DebugLog.shared.log("Proxy", "PLAYLIST \(path) body is not UTF-8 — probably not a playlist at all")
+            return
+        }
+        var segments = 0
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            if trimmed.hasPrefix("#EXT-X-STREAM-INF") || trimmed.hasPrefix("#EXT-X-MEDIA")
+                || trimmed.hasPrefix("#EXT-X-TARGETDURATION") || trimmed.hasPrefix("#EXT-X-PLAYLIST-TYPE")
+                || trimmed.hasPrefix("#EXT-X-VERSION") {
+                DebugLog.shared.log("Proxy", "PLAYLIST \(path) | \(trimmed)")
+            } else if !trimmed.hasPrefix("#") {
+                segments += 1
+            }
+        }
+        DebugLog.shared.log("Proxy", "PLAYLIST \(path) \(segments) URI line(s)")
+    }
+
+    private func ms(since t0: CFAbsoluteTime) -> Int {
+        return Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
     // Resolves every non-comment URI line against the playlist's own remote
@@ -252,7 +298,8 @@ final class LocalStreamProxy: NSObject {
 
     // MARK: - Segments / direct streams (true streaming — relayed as they arrive)
 
-    private func streamRemote(_ remote: URL, gen: UInt64, rangeHeader: String?, clientFd: Int32) {
+    private func streamRemote(_ remote: URL, gen: UInt64, path: String, rangeHeader: String?, clientFd: Int32) {
+        let t0 = CFAbsoluteTimeGetCurrent()
         let conn = ProxyConn(clientFd: clientFd, gen: gen, proxy: self)
         let connPtr = Unmanaged.passUnretained(conn).toOpaque()
 
@@ -276,8 +323,22 @@ final class LocalStreamProxy: NSObject {
         curl_bridge_set_progress_fn(h, proxyProgressCallback, connPtr)
 
         let rc = curl_bridge_perform(h)
+        let httpCode = curl_bridge_response_code(h)
+        let elapsed = ms(since: t0)
+
         if rc != 0 && !conn.aborted {
-            DebugLog.shared.log("Proxy", "curl error \(rc) for \(remote.absoluteString)")
+            // rc 35 = SSL connect error — the GCM-cipher handshake smoking gun.
+            // rc 28 = timeout, 7 = couldn't connect, 6 = couldn't resolve host.
+            let reason = String(cString: curl_bridge_strerror(rc))
+            DebugLog.shared.log("Proxy", "STREAM \(path) FAILED rc=\(rc) (\(reason)) http=\(httpCode) sent=\(conn.bytesRelayed)B in \(elapsed)ms")
+        } else if conn.aborted {
+            // Normal when the player seeks or closes the screen mid-segment.
+            DebugLog.shared.log("Proxy", "STREAM \(path) aborted (client gone or superseded) http=\(httpCode) sent=\(conn.bytesRelayed)B in \(elapsed)ms")
+        } else {
+            DebugLog.shared.log("Proxy", "STREAM \(path) ok http=\(httpCode) sent=\(conn.bytesRelayed)B in \(elapsed)ms\(conn.upstreamStatus.isEmpty ? "" : " upstream=\(conn.upstreamStatus)")")
+            if conn.bytesRelayed == 0 {
+                DebugLog.shared.log("Proxy", "STREAM \(path) WARNING upstream returned an empty body")
+            }
         }
         // If curl failed before the body callback ever ran, the client is
         // still waiting on a response head.
@@ -324,6 +385,8 @@ private final class ProxyConn {
     var pendingHead = ""
     var headersSent = false
     var aborted = false
+    var bytesRelayed = 0
+    var upstreamStatus = ""   // upstream's status line, for the log
 
     init(clientFd: Int32, gen: UInt64, proxy: LocalStreamProxy) {
         self.clientFd = clientFd
@@ -343,6 +406,7 @@ private let proxyHeaderCallback: @convention(c) (UnsafeRawPointer?, Int, Int, Un
     let lower = line.lowercased()
     if lower.hasPrefix("http/") {
         conn.pendingHead = line // a redirect restarts the head — keep only the final one
+        conn.upstreamStatus = line.trimmingCharacters(in: .whitespacesAndNewlines)
     } else if lower.hasPrefix("transfer-encoding:") || lower.hasPrefix("connection:") {
         // dropped — we set these ourselves
     } else if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -371,6 +435,7 @@ private let proxyBodyCallback: @convention(c) (UnsafeRawPointer?, Int, Int, Unsa
         conn.aborted = true
         return 0
     }
+    conn.bytesRelayed += bytes
     return bytes
 }
 

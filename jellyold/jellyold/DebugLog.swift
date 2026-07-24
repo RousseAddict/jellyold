@@ -29,6 +29,21 @@ final class DebugLog {
 
     private init() {}
 
+    // Masks the Jellyfin api_key in a URL before it reaches the log, so the
+    // file can be handed around without leaking an access token.
+    static func redact(_ text: String) -> String {
+        guard text.range(of: "api_key=") != nil else { return text }
+        let parts = text.components(separatedBy: "api_key=")
+        var out = parts[0] + "api_key=***"
+        for part in parts.dropFirst() {
+            // keep whatever followed the token value (&NextParam=...)
+            if let amp = part.range(of: "&") {
+                out += String(part[amp.lowerBound...])
+            }
+        }
+        return out
+    }
+
     func log(_ category: String, _ message: String) {
         let stamp = dateFormatter.string(from: Date())
         let line = "[\(stamp)] [\(category)] \(message)\n"

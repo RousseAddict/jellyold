@@ -20,6 +20,7 @@ class VideoPlayerVC: UIViewController {
 #else
     private var avPlayer: AVPlayer?
     private var playerVC: AVPlayerViewController?
+    private weak var observedItem: AVPlayerItem?
 #endif
 
     private var isAudio: Bool { item.type == "Audio" }
@@ -100,6 +101,10 @@ class VideoPlayerVC: UIViewController {
         player?.stop()
 #else
         avPlayer?.pause()
+        if let observed = observedItem {
+            observed.removeObserver(self, forKeyPath: "status")
+            observedItem = nil
+        }
 #endif
         streamProxy.stop()
         try? AVAudioSession.sharedInstance().setActive(false)
@@ -133,11 +138,27 @@ class VideoPlayerVC: UIViewController {
     // can't negotiate the GCM-only cipher suites modern Jellyfin/TLS
     // reverse proxies require.
     private func resolvedPlaybackURL() -> URL? {
-        guard let remote = buildStreamURL() else { return nil }
-        guard remote.isFileURL else {
-            return streamProxy.start(remoteURL: remote) ?? remote
+        let dev = UIDevice.current
+        DebugLog.shared.log("Player", "OPEN \"\(item.name)\" type=\(item.type) id=\(item.id) device=\(dev.model)/\(dev.systemVersion) forceTranscode=\(forceTranscode) audioIdx=\(selectedAudioIndex ?? -1) subIdx=\(selectedSubtitleIndex ?? -1) downloaded=\(DownloadManager.isDownloaded(item.id))")
+        guard let remote = buildStreamURL() else {
+            // Only reachable when serverURL/accessToken/userId is missing.
+            DebugLog.shared.log("Player", "no stream URL — server=\(JellyfinServer.serverURL ?? "nil") token=\(JellyfinServer.accessToken == nil ? "nil" : "set") userId=\(JellyfinServer.userId == nil ? "nil" : "set")")
+            return nil
         }
-        return remote
+        if remote.isFileURL {
+            let exists = FileManager.default.fileExists(atPath: remote.path)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: remote.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            DebugLog.shared.log("Player", "playing LOCAL file exists=\(exists) size=\(size)B \(remote.path)")
+            return remote
+        }
+        DebugLog.shared.log("Player", "remote URL \(DebugLog.redact(remote.absoluteString))")
+        guard let local = streamProxy.start(remoteURL: remote) else {
+            DebugLog.shared.log("Player", "proxy unavailable — handing the player the DIRECT url (TLS unprotected on iOS 6/7)")
+            return remote
+        }
+        DebugLog.shared.log("Player", "playing via proxy \(local.absoluteString)")
+        return local
     }
 
     private func buildStreamURL() -> URL? {
@@ -194,8 +215,11 @@ class VideoPlayerVC: UIViewController {
 
 #if IOS6_TARGET
     private func setupPlayer() {
-        guard let url = resolvedPlaybackURL(),
-              let player = MPMoviePlayerController(contentURL: url) else { return }
+        guard let url = resolvedPlaybackURL() else { return }
+        guard let player = MPMoviePlayerController(contentURL: url) else {
+            DebugLog.shared.log("Player", "MPMoviePlayerController init returned nil for \(url.absoluteString)")
+            return
+        }
         player.view.frame = view.bounds
         player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         player.controlStyle = isAudio ? .embedded : .fullscreen
@@ -208,6 +232,11 @@ class VideoPlayerVC: UIViewController {
             name: NSNotification.Name.MPMoviePlayerPlaybackDidFinish, object: player)
         NotificationCenter.default.addObserver(self, selector: #selector(loadStateChanged),
             name: NSNotification.Name.MPMoviePlayerLoadStateDidChange, object: player)
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackStateChanged),
+            name: NSNotification.Name.MPMoviePlayerPlaybackStateDidChange, object: player)
+        NotificationCenter.default.addObserver(self, selector: #selector(durationAvailable),
+            name: NSNotification.Name.MPMovieDurationAvailable, object: player)
+        DebugLog.shared.log("Player", "MPMoviePlayerController prepareToPlay called")
     }
 
     private func setupBufferSpinner() {
@@ -222,11 +251,33 @@ class VideoPlayerVC: UIViewController {
 
     @objc private func loadStateChanged() {
         guard let player = player else { return }
-        if player.loadState.contains(.playable) && !player.loadState.contains(.stalled) {
+        let s = player.loadState
+        // An empty loadState that never advances past 0 is the classic
+        // "server/stream is fine but this device can't decode it" signature.
+        var flags: [String] = []
+        if s.contains(.playable) { flags.append("playable") }
+        if s.contains(.playthroughOK) { flags.append("playthroughOK") }
+        if s.contains(.stalled) { flags.append("stalled") }
+        DebugLog.shared.log("Player", "loadState=[\(flags.isEmpty ? "none" : flags.joined(separator: "|"))] raw=\(s.rawValue)")
+        if s.contains(.playable) && !s.contains(.stalled) {
             bufferSpinner.stopAnimating()
         } else {
             bufferSpinner.startAnimating()
         }
+    }
+
+    @objc private func playbackStateChanged() {
+        guard let player = player else { return }
+        let names = ["stopped", "playing", "paused", "interrupted",
+                     "seekingForward", "seekingBackward"]
+        let raw = player.playbackState.rawValue
+        let name = (raw >= 0 && raw < names.count) ? names[raw] : "unknown(\(raw))"
+        DebugLog.shared.log("Player", "playbackState=\(name) time=\(String(format: "%.1f", player.currentPlaybackTime))s")
+    }
+
+    @objc private func durationAvailable() {
+        guard let player = player else { return }
+        DebugLog.shared.log("Player", "duration=\(String(format: "%.1f", player.duration))s naturalSize=\(Int(player.naturalSize.width))x\(Int(player.naturalSize.height))")
     }
 
     private func savePosition() {
@@ -249,6 +300,7 @@ class VideoPlayerVC: UIViewController {
     private func setupPlayer() {
         guard let url = resolvedPlaybackURL() else { return }
         let avPlayer = AVPlayer(url: url)
+        DebugLog.shared.log("Player", "AVPlayer created")
         self.avPlayer = avPlayer
         let playerVC = AVPlayerViewController()
         playerVC.player = avPlayer
@@ -262,6 +314,52 @@ class VideoPlayerVC: UIViewController {
         self.playerVC = playerVC
         NotificationCenter.default.addObserver(self, selector: #selector(playbackFinished),
             name: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: avPlayer.currentItem)
+        NotificationCenter.default.addObserver(self, selector: #selector(itemFailedToPlay(_:)),
+            name: NSNotification.Name.AVPlayerItemFailedToPlayToEndTime, object: avPlayer.currentItem)
+        NotificationCenter.default.addObserver(self, selector: #selector(itemStalled),
+            name: NSNotification.Name.AVPlayerItemPlaybackStalled, object: avPlayer.currentItem)
+        // KVO on status is the only place AVFoundation surfaces the real
+        // decode/network error behind a stream that just never starts.
+        if let currentItem = avPlayer.currentItem {
+            currentItem.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+            observedItem = currentItem
+        }
+    }
+
+    @objc private func itemFailedToPlay(_ notification: Notification) {
+        let err = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+        DebugLog.shared.log("Player", "AVPlayerItem FAILED to play to end: \(describe(err))")
+    }
+
+    @objc private func itemStalled() {
+        DebugLog.shared.log("Player", "AVPlayerItem playback stalled")
+    }
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        guard keyPath == "status", let item = object as? AVPlayerItem else {
+            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
+            return
+        }
+        switch item.status {
+        case .readyToPlay:
+            DebugLog.shared.log("Player", "AVPlayerItem status=readyToPlay duration=\(String(format: "%.1f", item.duration.seconds))s")
+        case .failed:
+            DebugLog.shared.log("Player", "AVPlayerItem status=FAILED \(describe(item.error as NSError?))")
+        case .unknown:
+            DebugLog.shared.log("Player", "AVPlayerItem status=unknown")
+        @unknown default:
+            DebugLog.shared.log("Player", "AVPlayerItem status=unhandled")
+        }
+    }
+
+    private func describe(_ err: NSError?) -> String {
+        guard let e = err else { return "(no error object)" }
+        var out = "domain=\(e.domain) code=\(e.code) \(e.localizedDescription)"
+        if let underlying = e.userInfo[NSUnderlyingErrorKey] as? NSError {
+            out += " underlying=[domain=\(underlying.domain) code=\(underlying.code) \(underlying.localizedDescription)]"
+        }
+        return out
     }
 
     private func setupBufferSpinner() {
@@ -290,6 +388,19 @@ class VideoPlayerVC: UIViewController {
     private var resumeKey: String { "resume_\(item.id)" }
 
     @objc private func playbackFinished(_ notification: Notification) {
+#if IOS6_TARGET
+        // "playbackError" here is the single most telling line when a stream
+        // plays on one device but not another — MPMoviePlayerController
+        // reports a failed decode/load as a *finish*, not as an error.
+        let reasons = ["playbackEnded", "userExited", "playbackError"]
+        let raw = (notification.userInfo?[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] as? NSNumber)?.intValue ?? -1
+        let reason = (raw >= 0 && raw < reasons.count) ? reasons[raw] : "unknown(\(raw))"
+        let err = notification.userInfo?["error"] as? NSError
+        DebugLog.shared.log("Player", "playbackFinished reason=\(reason)"
+            + (err == nil ? "" : " error=[domain=\(err!.domain) code=\(err!.code) \(err!.localizedDescription)]"))
+#else
+        DebugLog.shared.log("Player", "playbackFinished (played to end)")
+#endif
         UserDefaults.standard.removeObject(forKey: resumeKey)
         navigationController?.popViewController(animated: true)
     }
