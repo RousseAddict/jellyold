@@ -22,6 +22,10 @@ void        curl_bridge_set_ssl_noverify(CurlHandle h);
 void        curl_bridge_set_follow_redirects(CurlHandle h);
 void        curl_bridge_set_timeout(CurlHandle h, long secs);
 void        curl_bridge_set_write_fn(CurlHandle h, CurlBridgeWriteFn fn, void *userdata);
+/* Raw response header lines (status line + each header), one call per line —
+   used by the streaming proxy to pass upstream's real status/headers through
+   to the player instead of hardcoding them. */
+void        curl_bridge_set_header_fn(CurlHandle h, CurlBridgeWriteFn fn, void *userdata);
 void        curl_bridge_set_progress_fn(CurlHandle h, CurlBridgeProgressFn fn, void *clientp);
 
 /* POST + custom headers (used by the login path) */
