@@ -9,6 +9,7 @@ import AVKit
 class VideoPlayerVC: UIViewController {
     private let item: MediaItem
     private var bufferSpinner: UIActivityIndicatorView!
+    private let streamProxy = LocalStreamProxy()
 
     private var selectedAudioIndex: Int?        // Jellyfin stream index — AudioStreamIndex URL param
     private var selectedSubtitleIndex: Int?     // Jellyfin stream index — SubtitleStreamIndex URL param
@@ -100,6 +101,7 @@ class VideoPlayerVC: UIViewController {
 #else
         avPlayer?.pause()
 #endif
+        streamProxy.stop()
         try? AVAudioSession.sharedInstance().setActive(false)
     }
 
@@ -122,6 +124,21 @@ class VideoPlayerVC: UIViewController {
     }
 
     // MARK: - Stream URL
+
+    // The URL actually handed to the player. Downloaded files are already
+    // local, so they play directly — everything else is a remote Jellyfin
+    // URL (http or https) and gets routed through the local TLS-safe proxy,
+    // since neither MPMoviePlayerController nor AVPlayer can be given a
+    // custom networking transport directly and iOS 6/7 Secure Transport
+    // can't negotiate the GCM-only cipher suites modern Jellyfin/TLS
+    // reverse proxies require.
+    private func resolvedPlaybackURL() -> URL? {
+        guard let remote = buildStreamURL() else { return nil }
+        guard remote.isFileURL else {
+            return streamProxy.start(remoteURL: remote) ?? remote
+        }
+        return remote
+    }
 
     private func buildStreamURL() -> URL? {
         // Offline copy takes priority over any remote stream.
@@ -177,7 +194,7 @@ class VideoPlayerVC: UIViewController {
 
 #if IOS6_TARGET
     private func setupPlayer() {
-        guard let url = buildStreamURL(),
+        guard let url = resolvedPlaybackURL(),
               let player = MPMoviePlayerController(contentURL: url) else { return }
         player.view.frame = view.bounds
         player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -230,7 +247,7 @@ class VideoPlayerVC: UIViewController {
 
 #else
     private func setupPlayer() {
-        guard let url = buildStreamURL() else { return }
+        guard let url = resolvedPlaybackURL() else { return }
         let avPlayer = AVPlayer(url: url)
         self.avPlayer = avPlayer
         let playerVC = AVPlayerViewController()

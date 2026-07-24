@@ -34,6 +34,8 @@
 		BB160004 /* CurlFetcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB160003 /* CurlFetcher.swift */; };
 		BB160006 /* atomic_stubs.c in Sources */ = {isa = PBXBuildFile; fileRef = BB160005 /* atomic_stubs.c */; settings = {COMPILER_FLAGS = "-fno-builtin"; }; };
 		BB160008 /* atomic_stubs.S in Sources */ = {isa = PBXBuildFile; fileRef = BB160007 /* atomic_stubs.S */; };
+		BB170002 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB170001 /* DownloadManager.swift */; };
+		BB170004 /* DownloadsVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB170003 /* DownloadsVC.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,6 +86,8 @@
 		BB160003 /* CurlFetcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CurlFetcher.swift; sourceTree = "<group>"; };
 		BB160005 /* atomic_stubs.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = atomic_stubs.c; sourceTree = "<group>"; };
 		BB160007 /* atomic_stubs.S */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.asm; path = atomic_stubs.S; sourceTree = "<group>"; };
+		BB170001 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
+		BB170003 /* DownloadsVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsVC.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -155,6 +159,8 @@
 				BB160005 /* atomic_stubs.c */,
 				BB160003 /* CurlFetcher.swift */,
 				BB160001 /* curl_bridge.c */,
+				BB170003 /* DownloadsVC.swift */,
+				BB170001 /* DownloadManager.swift */,
 				A34363002FD764270064ADE1 /* Default-568h@2x.png */,
 				BB150001 /* Logo@2x.png */,
 				A34362D72FD764250064ADE1 /* Assets.xcassets */,
@@ -329,6 +335,8 @@
 				BB160006 /* atomic_stubs.c in Sources */,
 				BB160004 /* CurlFetcher.swift in Sources */,
 				BB160002 /* curl_bridge.c in Sources */,
+				BB170004 /* DownloadsVC.swift in Sources */,
+				BB170002 /* DownloadManager.swift in Sources */,
 				A34362FF2FD764260064ADE1 /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -57,6 +57,22 @@ class CurlFetcher {
     // Never run from the main thread (crashes — OpenSSL threading init).
     private static let curlGlobalInit: Bool = { curl_bridge_global_init(); return true }()
 
+    // Ensures curl_global_init has run. Callers driving libcurl directly on
+    // their own background threads (e.g. the streaming proxy's per-connection
+    // threads) must call this before their first curl_bridge_init(), same as
+    // every method below does implicitly.
+    static func ensureGlobalInit() {
+        _ = curlGlobalInit
+    }
+
+    // Synchronous GET -> Data. Caller must already be off the main thread
+    // (curl_global_init crashes if triggered there). Used by the streaming
+    // proxy for playlist fetches, which need the whole body to rewrite URIs.
+    static func fetchSyncData(url: String, headers: [String: String] = [:], timeout: Int = 30) -> Data? {
+        _ = curlGlobalInit
+        return CurlFetcher().syncFetchData(url: url, headers: headers, timeout: timeout)
+    }
+
     // GET url -> Data on a background thread; completion on the main thread.
     static func fetchData(url: String,
                           headers: [String: String] = [:],
