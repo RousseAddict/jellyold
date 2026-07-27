@@ -49,8 +49,7 @@ final class LocalStreamProxy: NSObject {
             DebugLog.shared.log("Proxy", "start FAILED (socket unavailable) — caller will use the direct URL, TLS unprotected")
             return nil
         }
-        let isPlaylist = remoteURL.pathExtension.lowercased() == "m3u8"
-        let path = registerPath(for: remoteURL, isPlaylist: isPlaylist, gen: gen)
+        let path = registerPath(for: remoteURL, isPlaylist: LocalStreamProxy.isPlaylistURL(remoteURL), gen: gen)
         DebugLog.shared.log("Proxy", "start gen=\(gen) \(path) -> \(DebugLog.redact(remoteURL.absoluteString))")
         return URL(string: "http://127.0.0.1:\(port)\(path)")
     }
@@ -149,10 +148,36 @@ final class LocalStreamProxy: NSObject {
     private func registerPath(for remoteURL: URL, isPlaylist: Bool, gen: UInt64) -> String {
         lock.lock(); defer { lock.unlock() }
         nextID += 1
-        let ext = isPlaylist ? "m3u8" : (remoteURL.pathExtension.isEmpty ? "ts" : remoteURL.pathExtension)
+        let urlExt = LocalStreamProxy.fileExtension(of: remoteURL)
+        let ext = isPlaylist ? "m3u8" : (urlExt.isEmpty ? "ts" : urlExt)
         let path = "/\(nextID).\(ext)"
         routes[path] = remoteURL
         return path
+    }
+
+    static func isPlaylistURL(_ url: URL) -> Bool {
+        return fileExtension(of: url) == "m3u8"
+    }
+
+    static func fileExtension(of url: URL) -> String {
+        // Fast path: NSURL computes this in C. It must stay the common case —
+        // this runs once per line of a playlist that can hold 1000+ segments,
+        // and the fallback below is orders of magnitude more expensive
+        // (absoluteString hands back a bridged NSString, and walking one of
+        // those from Swift is brutally slow on an A4/A5).
+        let ext = url.pathExtension
+        if !ext.isEmpty { return ext.lowercased() }
+        // Empty means either genuinely no extension, or a non-hierarchical
+        // URL — which is what a server address stored without a scheme
+        // produces ("host:8096/..." parses as scheme "host", leaving path and
+        // pathExtension empty). Slice the raw string with NSString's C path
+        // helpers rather than Swift character indexing.
+        var s = url.absoluteString as NSString
+        let hash = s.range(of: "#")
+        if hash.location != NSNotFound { s = s.substring(to: hash.location) as NSString }
+        let q = s.range(of: "?")
+        if q.location != NSNotFound { s = s.substring(to: q.location) as NSString }
+        return s.pathExtension.lowercased()
     }
 
     private func route(for path: String) -> URL? {
@@ -240,8 +265,7 @@ final class LocalStreamProxy: NSObject {
             return
         }
         DebugLog.shared.log("Proxy", "PLAYLIST \(path) fetched \(data.count)B in \(ms(since: t0))ms")
-        logPlaylistContents(data, path: path)
-        let body = rewritePlaylist(data, baseURL: remote, gen: gen)
+        let body = rewritePlaylist(data, baseURL: remote, gen: gen, path: path)
         let head = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n"
         guard LocalStreamProxy.sendAll(clientFd, Array(head.utf8)) else { return }
         body.withUnsafeBytes { raw in
@@ -249,30 +273,6 @@ final class LocalStreamProxy: NSObject {
                 _ = LocalStreamProxy.sendAll(clientFd, base.assumingMemoryBound(to: UInt8.self), body.count)
             }
         }
-    }
-
-    // Logs what the server actually returned: the variant/codec declarations
-    // and segment count. Playback failing on one device but not another is
-    // usually a codec/profile the older device can't decode, so these lines
-    // are the ones to compare between two devices' logs.
-    private func logPlaylistContents(_ data: Data, path: String) {
-        guard let text = String(data: data, encoding: .utf8) else {
-            DebugLog.shared.log("Proxy", "PLAYLIST \(path) body is not UTF-8 — probably not a playlist at all")
-            return
-        }
-        var segments = 0
-        for line in text.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
-            if trimmed.hasPrefix("#EXT-X-STREAM-INF") || trimmed.hasPrefix("#EXT-X-MEDIA")
-                || trimmed.hasPrefix("#EXT-X-TARGETDURATION") || trimmed.hasPrefix("#EXT-X-PLAYLIST-TYPE")
-                || trimmed.hasPrefix("#EXT-X-VERSION") {
-                DebugLog.shared.log("Proxy", "PLAYLIST \(path) | \(trimmed)")
-            } else if !trimmed.hasPrefix("#") {
-                segments += 1
-            }
-        }
-        DebugLog.shared.log("Proxy", "PLAYLIST \(path) \(segments) URI line(s)")
     }
 
     private func ms(since t0: CFAbsoluteTime) -> Int {
@@ -283,16 +283,36 @@ final class LocalStreamProxy: NSObject {
     // URL and replaces it with a local proxy path, so nested playlists and
     // segments get proxied (and, if themselves playlists, rewritten again)
     // recursively.
-    private func rewritePlaylist(_ data: Data, baseURL: URL, gen: UInt64) -> Data {
-        guard let text = String(data: data, encoding: .utf8) else { return data }
+    //
+    // The variant/codec declarations are logged in this same pass rather than
+    // a separate one: a VOD playlist can carry 1000+ segments, and on an
+    // A4/A5 one extra walk over it is a second of dead time before playback
+    // can start. The logged lines are what to compare between a device that
+    // plays the item and one that doesn't.
+    private func rewritePlaylist(_ data: Data, baseURL: URL, gen: UInt64, path: String) -> Data {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        guard let text = String(data: data, encoding: .utf8) else {
+            DebugLog.shared.log("Proxy", "PLAYLIST \(path) body is not UTF-8 — probably not a playlist at all")
+            return data
+        }
+        var uriCount = 0
         let lines = text.components(separatedBy: "\n")
         let rewritten = lines.map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return line }
+            if trimmed.isEmpty { return line }
+            if trimmed.hasPrefix("#") {
+                if trimmed.hasPrefix("#EXT-X-STREAM-INF") || trimmed.hasPrefix("#EXT-X-MEDIA")
+                    || trimmed.hasPrefix("#EXT-X-TARGETDURATION") || trimmed.hasPrefix("#EXT-X-PLAYLIST-TYPE")
+                    || trimmed.hasPrefix("#EXT-X-VERSION") {
+                    DebugLog.shared.log("Proxy", "PLAYLIST \(path) | \(trimmed)")
+                }
+                return line
+            }
+            uriCount += 1
             guard let resolved = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL else { return line }
-            let isNestedPlaylist = resolved.pathExtension.lowercased() == "m3u8"
-            return registerPath(for: resolved, isPlaylist: isNestedPlaylist, gen: gen)
+            return registerPath(for: resolved, isPlaylist: LocalStreamProxy.isPlaylistURL(resolved), gen: gen)
         }
+        DebugLog.shared.log("Proxy", "PLAYLIST \(path) rewrote \(uriCount) URI(s) in \(ms(since: t0))ms")
         return Data(rewritten.joined(separator: "\n").utf8)
     }
 
@@ -325,6 +345,16 @@ final class LocalStreamProxy: NSObject {
         let rc = curl_bridge_perform(h)
         let httpCode = curl_bridge_response_code(h)
         let elapsed = ms(since: t0)
+
+        // Upstream said this is a playlist even though the route wasn't
+        // registered as one. Relaying it verbatim would leave its relative
+        // URIs pointing at paths the proxy has never heard of, so refetch it
+        // through the playlist path instead (small text, cheap to redo).
+        if conn.needsPlaylistRetry {
+            DebugLog.shared.log("Proxy", "STREAM \(path) upstream Content-Type is a playlist — re-serving as one")
+            servePlaylist(remote: remote, gen: gen, path: path, clientFd: clientFd)
+            return
+        }
 
         if rc != 0 && !conn.aborted {
             // rc 35 = SSL connect error — the GCM-cipher handshake smoking gun.
@@ -387,6 +417,8 @@ private final class ProxyConn {
     var aborted = false
     var bytesRelayed = 0
     var upstreamStatus = ""   // upstream's status line, for the log
+    var upstreamIsPlaylist = false
+    var needsPlaylistRetry = false
 
     init(clientFd: Int32, gen: UInt64, proxy: LocalStreamProxy) {
         self.clientFd = clientFd
@@ -409,6 +441,10 @@ private let proxyHeaderCallback: @convention(c) (UnsafeRawPointer?, Int, Int, Un
         conn.upstreamStatus = line.trimmingCharacters(in: .whitespacesAndNewlines)
     } else if lower.hasPrefix("transfer-encoding:") || lower.hasPrefix("connection:") {
         // dropped — we set these ourselves
+    } else if lower.hasPrefix("content-type:") {
+        // application/vnd.apple.mpegurl or application/x-mpegURL
+        if lower.range(of: "mpegurl") != nil { conn.upstreamIsPlaylist = true }
+        conn.pendingHead += line
     } else if !line.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         conn.pendingHead += line
     }
@@ -423,6 +459,13 @@ private let proxyBodyCallback: @convention(c) (UnsafeRawPointer?, Int, Int, Unsa
     guard let ptr = ptr, let userdata = userdata else { return 0 }
     let conn = Unmanaged<ProxyConn>.fromOpaque(userdata).takeUnretainedValue()
     if conn.aborted { return 0 }
+    // Nothing has been written to the client yet, so the whole response can
+    // still be redone as a playlist — abort here and let streamRemote retry.
+    if conn.upstreamIsPlaylist && !conn.headersSent {
+        conn.needsPlaylistRetry = true
+        conn.aborted = true
+        return 0
+    }
     if !conn.headersSent {
         let head = (conn.pendingHead.isEmpty ? "HTTP/1.1 200 OK\r\n" : conn.pendingHead) + "Connection: close\r\n\r\n"
         if !LocalStreamProxy.sendAll(conn.clientFd, Array(head.utf8)) {
