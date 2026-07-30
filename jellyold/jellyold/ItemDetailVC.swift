@@ -79,6 +79,9 @@ class ItemDetailVC: UIViewController {
         scrollView = UIScrollView(frame: view.bounds)
         scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         scrollView.backgroundColor = bgColor
+        // Room for MiniPlayerBar, which floats over the nav controller's view.
+        scrollView.contentInset = UIEdgeInsets(top: 0, left: 0,
+                                              bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(scrollView)
 
         // Fetched for every item type (including Audio) — the file-metadata section at the
@@ -194,6 +197,18 @@ class ItemDetailVC: UIViewController {
         playBtn.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         scrollView.addSubview(playBtn)
         y += 50 + 12
+
+        if item.type == "Audio" {
+            let playNext = makeTrackButton("Play Next", y: y, width: w)
+            playNext.addTarget(self, action: #selector(playNextTapped), for: .touchUpInside)
+            scrollView.addSubview(playNext)
+            y += 40 + 8
+
+            let addEnd = makeTrackButton("Add to Queue", y: y, width: w)
+            addEnd.addTarget(self, action: #selector(addToQueueTapped), for: .touchUpInside)
+            scrollView.addSubview(addEnd)
+            y += 40 + 20
+        }
 
         if item.type != "Audio" {
             let dl = UIButton(type: .custom)
@@ -406,6 +421,11 @@ class ItemDetailVC: UIViewController {
     }
 
     @objc private func playTapped() {
+        if item.type == "Audio" {
+            AudioQueue.shared.play(items: [item], startAt: 0)
+            navigationController?.pushViewController(NowPlayingVC(), animated: true)
+            return
+        }
         navigationController?.pushViewController(
             VideoPlayerVC(item: item,
                           audioIndex: selectedAudioIndex,
@@ -414,6 +434,9 @@ class ItemDetailVC: UIViewController {
             animated: true
         )
     }
+
+    @objc private func playNextTapped() { AudioQueue.shared.playNext(item) }
+    @objc private func addToQueueTapped() { AudioQueue.shared.addToEnd(item) }
 
     // MARK: - Download
 

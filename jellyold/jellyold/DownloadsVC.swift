@@ -79,6 +79,9 @@ class DownloadsVC: UIViewController, UITableViewDataSource, UITableViewDelegate 
         let navH: CGFloat = 64
         tableView.frame = CGRect(x: 0, y: 0, width: w, height: h - navH)
         tableView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        // Room for MiniPlayerBar, which floats over the nav controller's view.
+        tableView.contentInset = UIEdgeInsets(top: 0, left: 0,
+                                             bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(tableView)
         emptyLabel.frame = CGRect(x: 20, y: 80, width: w - 40, height: 60)
         emptyLabel.autoresizingMask = [.flexibleWidth]
@@ -176,6 +179,13 @@ class DownloadsVC: UIViewController, UITableViewDataSource, UITableViewDelegate 
         tableView.deselectRow(at: indexPath, animated: true)
         let item = items[indexPath.row]
         guard DownloadManager.isDownloaded(item.id) else { return }
+        // Audio never gets downloaded (no Download button for it), but a legacy
+        // registry entry could still be one — route it to the audio player.
+        if item.type == "Audio" {
+            AudioQueue.shared.play(items: [item], startAt: 0)
+            navigationController?.pushViewController(NowPlayingVC(), animated: true)
+            return
+        }
         navigationController?.pushViewController(VideoPlayerVC(item: item), animated: true)
     }
 }

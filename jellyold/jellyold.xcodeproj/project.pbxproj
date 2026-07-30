@@ -38,6 +38,25 @@
 		BB170004 /* DownloadsVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB170003 /* DownloadsVC.swift */; };
 		BB190002 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB190001 /* DebugLog.swift */; };
 		BB190004 /* LocalStreamProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB190003 /* LocalStreamProxy.swift */; };
+		BB200002 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200001 /* AudioPlayer.swift */; };
+		BB200004 /* AudioQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200003 /* AudioQueue.swift */; };
+		BB200006 /* NowPlayingVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200005 /* NowPlayingVC.swift */; };
+		BB200008 /* QueueVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200007 /* QueueVC.swift */; };
+		BB200010 /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200009 /* MiniPlayerBar.swift */; };
+		BB210002 /* play.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210001 /* play.png */; };
+		BB210004 /* play@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210003 /* play@2x.png */; };
+		BB210006 /* pause.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210005 /* pause.png */; };
+		BB210008 /* pause@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210007 /* pause@2x.png */; };
+		BB210010 /* play-small.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210009 /* play-small.png */; };
+		BB210012 /* play-small@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210011 /* play-small@2x.png */; };
+		BB210014 /* pause-small.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210013 /* pause-small.png */; };
+		BB210016 /* pause-small@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210015 /* pause-small@2x.png */; };
+		BB210018 /* skip-back.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210017 /* skip-back.png */; };
+		BB210020 /* skip-back@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210019 /* skip-back@2x.png */; };
+		BB210022 /* skip-forward.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210021 /* skip-forward.png */; };
+		BB210024 /* skip-forward@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210023 /* skip-forward@2x.png */; };
+		BB210026 /* x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210025 /* x.png */; };
+		BB210028 /* x@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210027 /* x@2x.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -92,6 +111,25 @@
 		BB170003 /* DownloadsVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsVC.swift; sourceTree = "<group>"; };
 		BB190001 /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
 		BB190003 /* LocalStreamProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStreamProxy.swift; sourceTree = "<group>"; };
+		BB200001 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
+		BB200003 /* AudioQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioQueue.swift; sourceTree = "<group>"; };
+		BB200005 /* NowPlayingVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingVC.swift; sourceTree = "<group>"; };
+		BB200007 /* QueueVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueVC.swift; sourceTree = "<group>"; };
+		BB200009 /* MiniPlayerBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerBar.swift; sourceTree = "<group>"; };
+		BB210001 /* play.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "play.png"; sourceTree = "<group>"; };
+		BB210003 /* play@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "play@2x.png"; sourceTree = "<group>"; };
+		BB210005 /* pause.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pause.png"; sourceTree = "<group>"; };
+		BB210007 /* pause@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pause@2x.png"; sourceTree = "<group>"; };
+		BB210009 /* play-small.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "play-small.png"; sourceTree = "<group>"; };
+		BB210011 /* play-small@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "play-small@2x.png"; sourceTree = "<group>"; };
+		BB210013 /* pause-small.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pause-small.png"; sourceTree = "<group>"; };
+		BB210015 /* pause-small@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "pause-small@2x.png"; sourceTree = "<group>"; };
+		BB210017 /* skip-back.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "skip-back.png"; sourceTree = "<group>"; };
+		BB210019 /* skip-back@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "skip-back@2x.png"; sourceTree = "<group>"; };
+		BB210021 /* skip-forward.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "skip-forward.png"; sourceTree = "<group>"; };
+		BB210023 /* skip-forward@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "skip-forward@2x.png"; sourceTree = "<group>"; };
+		BB210025 /* x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x.png"; sourceTree = "<group>"; };
+		BB210027 /* x@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x@2x.png"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -163,12 +201,31 @@
 				BB160005 /* atomic_stubs.c */,
 				BB160003 /* CurlFetcher.swift */,
 				BB160001 /* curl_bridge.c */,
+				BB200009 /* MiniPlayerBar.swift */,
+				BB200007 /* QueueVC.swift */,
+				BB200005 /* NowPlayingVC.swift */,
+				BB200003 /* AudioQueue.swift */,
+				BB200001 /* AudioPlayer.swift */,
 				BB190003 /* LocalStreamProxy.swift */,
 				BB190001 /* DebugLog.swift */,
 				BB170003 /* DownloadsVC.swift */,
 				BB170001 /* DownloadManager.swift */,
 				A34363002FD764270064ADE1 /* Default-568h@2x.png */,
 				BB150001 /* Logo@2x.png */,
+				BB210027 /* x@2x.png */,
+				BB210025 /* x.png */,
+				BB210023 /* skip-forward@2x.png */,
+				BB210021 /* skip-forward.png */,
+				BB210019 /* skip-back@2x.png */,
+				BB210017 /* skip-back.png */,
+				BB210015 /* pause-small@2x.png */,
+				BB210013 /* pause-small.png */,
+				BB210011 /* play-small@2x.png */,
+				BB210009 /* play-small.png */,
+				BB210007 /* pause@2x.png */,
+				BB210005 /* pause.png */,
+				BB210003 /* play@2x.png */,
+				BB210001 /* play.png */,
 				A34362D72FD764250064ADE1 /* Assets.xcassets */,
 			);
 			path = jellyold;
@@ -298,6 +355,20 @@
 				A34362D82FD764250064ADE1 /* Assets.xcassets in Resources */,
 				A34363012FD764270064ADE1 /* Default-568h@2x.png in Resources */,
 				BB150002 /* Logo@2x.png in Resources */,
+				BB210028 /* x@2x.png in Resources */,
+				BB210026 /* x.png in Resources */,
+				BB210024 /* skip-forward@2x.png in Resources */,
+				BB210022 /* skip-forward.png in Resources */,
+				BB210020 /* skip-back@2x.png in Resources */,
+				BB210018 /* skip-back.png in Resources */,
+				BB210016 /* pause-small@2x.png in Resources */,
+				BB210014 /* pause-small.png in Resources */,
+				BB210012 /* play-small@2x.png in Resources */,
+				BB210010 /* play-small.png in Resources */,
+				BB210008 /* pause@2x.png in Resources */,
+				BB210006 /* pause.png in Resources */,
+				BB210004 /* play@2x.png in Resources */,
+				BB210002 /* play.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -341,6 +412,11 @@
 				BB160006 /* atomic_stubs.c in Sources */,
 				BB160004 /* CurlFetcher.swift in Sources */,
 				BB160002 /* curl_bridge.c in Sources */,
+				BB200010 /* MiniPlayerBar.swift in Sources */,
+				BB200008 /* QueueVC.swift in Sources */,
+				BB200006 /* NowPlayingVC.swift in Sources */,
+				BB200004 /* AudioQueue.swift in Sources */,
+				BB200002 /* AudioPlayer.swift in Sources */,
 				BB190004 /* LocalStreamProxy.swift in Sources */,
 				BB190002 /* DebugLog.swift in Sources */,
 				BB170004 /* DownloadsVC.swift in Sources */,
@@ -506,6 +582,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -533,6 +610,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (

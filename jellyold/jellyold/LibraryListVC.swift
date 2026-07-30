@@ -33,6 +33,9 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.register(PosterCell.self, forCellWithReuseIdentifier: "PosterCell")
+        // Room for MiniPlayerBar, which floats over the nav controller's view.
+        collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
+                                                  bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(collectionView)
     }
 

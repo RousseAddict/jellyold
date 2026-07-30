@@ -14,6 +14,10 @@ private let sortOptions: [SortOption] = [
     SortOption(title: "Year",       sortBy: "ProductionYear",  sortOrder: "Descending"),
 ]
 
+#if IOS6_TARGET
+private enum SheetKind { case sort, audio }
+#endif
+
 // MARK: - ItemListVC
 
 class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
@@ -27,6 +31,14 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 
     private var currentSortIndex: Int = 0
     private var sortKey: String { "sortIndex_\(library.collectionType.isEmpty ? "default" : library.collectionType)" }
+
+#if IOS6_TARGET
+    // UIActionSheet has one delegate callback for every sheet this screen shows,
+    // so remember which one is up before decoding its button index.
+    private var pendingSheetKind: SheetKind = .sort
+    private var pendingAudioIndex: Int = -1
+    private var activeActionSheet: UIActionSheet?
+#endif
 
     private var useListDisplay: Bool {
         switch library.collectionType {
@@ -77,6 +89,11 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         collectionView.delegate = self
         collectionView.register(PosterCell.self,  forCellWithReuseIdentifier: "PosterCell")
         collectionView.register(EpisodeCell.self, forCellWithReuseIdentifier: "EpisodeCell")
+        // Room for MiniPlayerBar, which floats over the nav controller's view.
+        collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
+                                                  bottom: MiniPlayerBar.barHeight, right: 0)
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(longPressed))
+        collectionView.addGestureRecognizer(longPress)
         view.addSubview(collectionView)
     }
 
@@ -114,6 +131,8 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         )
         // Cancel is at index 0; options are added starting at index 1
         for opt in sortOptions { sheet.addButton(withTitle: opt.title) }
+        pendingSheetKind = .sort
+        activeActionSheet = sheet
         sheet.show(in: view)
 #else
         let alert = UIAlertController(title: "Sort by", message: nil, preferredStyle: .actionSheet)
@@ -144,7 +163,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 
         // Playlist content uses a different API endpoint
         if library.collectionType == "playlistContent" {
-            let url = "\(serverURL)/Playlists/\(library.id)/Items?UserId=\(userId)&Fields=Overview,ProductionYear,IndexNumber&Limit=300"
+            let url = "\(serverURL)/Playlists/\(library.id)/Items?UserId=\(userId)&Fields=Overview,ProductionYear,IndexNumber,Artists,Album&Limit=300"
             HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
                 self?.handleItemsResponse(data: data, error: error)
             }
@@ -187,7 +206,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             sortParams = "&SortBy=ProductionYear&SortOrder=Descending"
         }
 
-        let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(library.id)&Recursive=\(recursive)\(typeFilter)\(sortParams)&Fields=Overview,ProductionYear,IndexNumber&Limit=300"
+        let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(library.id)&Recursive=\(recursive)\(typeFilter)\(sortParams)&Fields=Overview,ProductionYear,IndexNumber,Artists,Album&Limit=300"
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             self?.handleItemsResponse(data: data, error: error)
         }
@@ -281,9 +300,68 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         case "Playlist":
             let child = Library(id: item.id, name: item.name, collectionType: "playlistContent")
             navigationController?.pushViewController(ItemListVC(library: child), animated: true)
+        case "Audio":
+            playAudio(at: indexPath.item)
         default:
             navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
         }
+    }
+
+    // MARK: - Audio
+
+    // Queues every Audio item in the loaded page (a playlist can hold videos
+    // too, so the queue is built from an Audio-only projection and the tapped
+    // row is remapped into it) and starts at the tapped track.
+    private func playAudio(at index: Int) {
+        var audioItems: [MediaItem] = []
+        var start = 0
+        for i in 0..<items.count where items[i].type == "Audio" {
+            if i == index { start = audioItems.count }
+            audioItems.append(items[i])
+        }
+        guard !audioItems.isEmpty else { return }
+        AudioQueue.shared.play(items: audioItems, startAt: start)
+        navigationController?.pushViewController(NowPlayingVC(), animated: true)
+    }
+
+    @objc private func longPressed(_ g: UILongPressGestureRecognizer) {
+        guard g.state == .began,
+              let ip = collectionView.indexPathForItem(at: g.location(in: collectionView)),
+              ip.item < items.count,
+              items[ip.item].type == "Audio" else { return }
+        showAudioSheet(at: ip.item)
+    }
+
+    private func showAudioSheet(at index: Int) {
+        let item = items[index]
+#if IOS6_TARGET
+        let sheet = UIActionSheet(title: item.name, delegate: self,
+                                  cancelButtonTitle: "Cancel", destructiveButtonTitle: nil)
+        // Cancel is at index 0; these are 1...4
+        for title in ["Play", "Play Next", "Add to Queue", "Details"] {
+            sheet.addButton(withTitle: title)
+        }
+        pendingSheetKind = .audio
+        pendingAudioIndex = index
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: item.name, message: nil, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "Play", style: .default) { [weak self] _ in
+            self?.playAudio(at: index)
+        })
+        alert.addAction(UIAlertAction(title: "Play Next", style: .default) { _ in
+            AudioQueue.shared.playNext(item)
+        })
+        alert.addAction(UIAlertAction(title: "Add to Queue", style: .default) { _ in
+            AudioQueue.shared.addToEnd(item)
+        })
+        alert.addAction(UIAlertAction(title: "Details", style: .default) { [weak self] _ in
+            self?.navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
     }
 }
 
@@ -292,10 +370,27 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 #if IOS6_TARGET
 extension ItemListVC: UIActionSheetDelegate {
     func actionSheet(_ actionSheet: UIActionSheet, clickedButtonAt buttonIndex: Int) {
+        let kind = pendingSheetKind
+        activeActionSheet = nil
         guard buttonIndex != actionSheet.cancelButtonIndex else { return }
-        let sortIndex = buttonIndex - 1  // cancel occupies index 0
-        guard sortIndex >= 0 && sortIndex < sortOptions.count else { return }
-        applySortIndex(sortIndex)
+        let optionIndex = buttonIndex - 1  // cancel occupies index 0
+        guard optionIndex >= 0 else { return }
+        switch kind {
+        case .sort:
+            guard optionIndex < sortOptions.count else { return }
+            applySortIndex(optionIndex)
+        case .audio:
+            let index = pendingAudioIndex
+            guard index >= 0, index < items.count else { return }
+            let item = items[index]
+            switch optionIndex {
+            case 0: playAudio(at: index)
+            case 1: AudioQueue.shared.playNext(item)
+            case 2: AudioQueue.shared.addToEnd(item)
+            case 3: navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
+            default: break
+            }
+        }
     }
 }
 #endif

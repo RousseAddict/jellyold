@@ -40,7 +40,13 @@ final class LocalStreamProxy: NSObject {
     // loopback socket couldn't be created — the caller should fall back to
     // the direct remote URL in that case. Bumps the generation counter so
     // any connections still serving a previous stream get cancelled.
-    func start(remoteURL: URL) -> URL? {
+    //
+    // `extHint` supplies the extension to advertise when the remote URL has
+    // none of its own. The default for that case is "ts", which is right for
+    // HLS segments but an actively wrong type hint for anything else — e.g.
+    // Jellyfin's audio endpoint (/Audio/{id}/universal) has no extension, and
+    // serving an mp3 from /1.ts stops the player dead.
+    func start(remoteURL: URL, extHint: String? = nil) -> URL? {
         lock.lock()
         currentGen += 1
         let gen = currentGen
@@ -49,7 +55,8 @@ final class LocalStreamProxy: NSObject {
             DebugLog.shared.log("Proxy", "start FAILED (socket unavailable) — caller will use the direct URL, TLS unprotected")
             return nil
         }
-        let path = registerPath(for: remoteURL, isPlaylist: LocalStreamProxy.isPlaylistURL(remoteURL), gen: gen)
+        let path = registerPath(for: remoteURL, isPlaylist: LocalStreamProxy.isPlaylistURL(remoteURL),
+                                gen: gen, extHint: extHint)
         DebugLog.shared.log("Proxy", "start gen=\(gen) \(path) -> \(DebugLog.redact(remoteURL.absoluteString))")
         return URL(string: "http://127.0.0.1:\(port)\(path)")
     }
@@ -145,11 +152,12 @@ final class LocalStreamProxy: NSObject {
 
     // MARK: - Path <-> remote URL mapping
 
-    private func registerPath(for remoteURL: URL, isPlaylist: Bool, gen: UInt64) -> String {
+    private func registerPath(for remoteURL: URL, isPlaylist: Bool, gen: UInt64,
+                              extHint: String? = nil) -> String {
         lock.lock(); defer { lock.unlock() }
         nextID += 1
         let urlExt = LocalStreamProxy.fileExtension(of: remoteURL)
-        let ext = isPlaylist ? "m3u8" : (urlExt.isEmpty ? "ts" : urlExt)
+        let ext = isPlaylist ? "m3u8" : (urlExt.isEmpty ? (extHint ?? "ts") : urlExt)
         let path = "/\(nextID).\(ext)"
         routes[path] = remoteURL
         return path

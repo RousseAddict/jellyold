@@ -36,6 +36,13 @@
 		BB160008 /* atomic_stubs.S in Sources */ = {isa = PBXBuildFile; fileRef = BB160007 /* atomic_stubs.S */; };
 		BB170002 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB170001 /* DownloadManager.swift */; };
 		BB170004 /* DownloadsVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB170003 /* DownloadsVC.swift */; };
+		BB190002 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB190001 /* DebugLog.swift */; };
+		BB190004 /* LocalStreamProxy.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB190003 /* LocalStreamProxy.swift */; };
+		BB200002 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200001 /* AudioPlayer.swift */; };
+		BB200004 /* AudioQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200003 /* AudioQueue.swift */; };
+		BB200006 /* NowPlayingVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200005 /* NowPlayingVC.swift */; };
+		BB200008 /* QueueVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200007 /* QueueVC.swift */; };
+		BB200010 /* MiniPlayerBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB200009 /* MiniPlayerBar.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -88,6 +95,13 @@
 		BB160007 /* atomic_stubs.S */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.asm; path = atomic_stubs.S; sourceTree = "<group>"; };
 		BB170001 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
 		BB170003 /* DownloadsVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsVC.swift; sourceTree = "<group>"; };
+		BB190001 /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
+		BB190003 /* LocalStreamProxy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalStreamProxy.swift; sourceTree = "<group>"; };
+		BB200001 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
+		BB200003 /* AudioQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioQueue.swift; sourceTree = "<group>"; };
+		BB200005 /* NowPlayingVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingVC.swift; sourceTree = "<group>"; };
+		BB200007 /* QueueVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueVC.swift; sourceTree = "<group>"; };
+		BB200009 /* MiniPlayerBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MiniPlayerBar.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -159,6 +173,13 @@
 				BB160005 /* atomic_stubs.c */,
 				BB160003 /* CurlFetcher.swift */,
 				BB160001 /* curl_bridge.c */,
+				BB200009 /* MiniPlayerBar.swift */,
+				BB200007 /* QueueVC.swift */,
+				BB200005 /* NowPlayingVC.swift */,
+				BB200003 /* AudioQueue.swift */,
+				BB200001 /* AudioPlayer.swift */,
+				BB190003 /* LocalStreamProxy.swift */,
+				BB190001 /* DebugLog.swift */,
 				BB170003 /* DownloadsVC.swift */,
 				BB170001 /* DownloadManager.swift */,
 				A34363002FD764270064ADE1 /* Default-568h@2x.png */,
@@ -335,6 +356,13 @@
 				BB160006 /* atomic_stubs.c in Sources */,
 				BB160004 /* CurlFetcher.swift in Sources */,
 				BB160002 /* curl_bridge.c in Sources */,
+				BB200010 /* MiniPlayerBar.swift in Sources */,
+				BB200008 /* QueueVC.swift in Sources */,
+				BB200006 /* NowPlayingVC.swift in Sources */,
+				BB200004 /* AudioQueue.swift in Sources */,
+				BB200002 /* AudioPlayer.swift in Sources */,
+				BB190004 /* LocalStreamProxy.swift in Sources */,
+				BB190002 /* DebugLog.swift in Sources */,
 				BB170004 /* DownloadsVC.swift in Sources */,
 				BB170002 /* DownloadManager.swift in Sources */,
 				A34362FF2FD764260064ADE1 /* AppDelegate.swift in Sources */,
@@ -498,6 +526,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -525,6 +554,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (

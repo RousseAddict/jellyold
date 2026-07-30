@@ -43,6 +43,9 @@ class VideoPlayerVC: UIViewController {
         super.viewDidLoad()
         title = item.name
         view.backgroundColor = .black
+        // The singleton audio player and this screen must never hold the audio
+        // session at the same time.
+        AudioPlayer.shared.pause()
         activateAudioSession()
         if isAudio { setupArtwork() }
         setupPlayer()
@@ -107,7 +110,11 @@ class VideoPlayerVC: UIViewController {
         }
 #endif
         streamProxy.stop()
-        try? AVAudioSession.sharedInstance().setActive(false)
+        // Only give the session up if AudioPlayer isn't using it — otherwise
+        // backing out of a video would kill background audio.
+        if !AudioPlayer.shared.isPlaying {
+            try? AVAudioSession.sharedInstance().setActive(false)
+        }
     }
 
     // MARK: - Common setup
