@@ -57,6 +57,7 @@
 		BB210024 /* skip-forward@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210023 /* skip-forward@2x.png */; };
 		BB210026 /* x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210025 /* x.png */; };
 		BB210028 /* x@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210027 /* x@2x.png */; };
+		BB220002 /* PhotoVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB220001 /* PhotoVC.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -130,6 +131,7 @@
 		BB210023 /* skip-forward@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "skip-forward@2x.png"; sourceTree = "<group>"; };
 		BB210025 /* x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x.png"; sourceTree = "<group>"; };
 		BB210027 /* x@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x@2x.png"; sourceTree = "<group>"; };
+		BB220001 /* PhotoVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoVC.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -201,6 +203,7 @@
 				BB160005 /* atomic_stubs.c */,
 				BB160003 /* CurlFetcher.swift */,
 				BB160001 /* curl_bridge.c */,
+				BB220001 /* PhotoVC.swift */,
 				BB200009 /* MiniPlayerBar.swift */,
 				BB200007 /* QueueVC.swift */,
 				BB200005 /* NowPlayingVC.swift */,
@@ -412,6 +415,7 @@
 				BB160006 /* atomic_stubs.c in Sources */,
 				BB160004 /* CurlFetcher.swift in Sources */,
 				BB160002 /* curl_bridge.c in Sources */,
+				BB220002 /* PhotoVC.swift in Sources */,
 				BB200010 /* MiniPlayerBar.swift in Sources */,
 				BB200008 /* QueueVC.swift in Sources */,
 				BB200006 /* NowPlayingVC.swift in Sources */,

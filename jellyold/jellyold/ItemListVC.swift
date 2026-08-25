@@ -49,7 +49,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 
     private var isSortable: Bool {
         switch library.collectionType {
-        case "movies", "tvshows", "music", "": return true
+        case "movies", "tvshows", "music", "homevideos", "photos", "folder", "": return true
         default: return false
         }
     }
@@ -189,6 +189,11 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             typeFilter = "&IncludeItemTypes=Audio"
         case "playlists":
             typeFilter = "&IncludeItemTypes=Playlist"
+        case "homevideos", "photos":
+            // A home videos & photos library holds Video/Photo/PhotoAlbum/Folder items —
+            // never Movie or Series, so the default filter below returns nothing.
+            // Recursive=false keeps subfolders browsable instead of flattening them.
+            typeFilter = ""; recursive = "false"
         case "folder":
             // Generic folder drill-down (e.g. from a tvshows library subfolder)
             typeFilter = ""; recursive = "false"
@@ -287,10 +292,13 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         switch item.type {
         case "Series":
             navigationController?.pushViewController(SeasonListVC(series: item), animated: true)
-        case "Folder", "CollectionFolder":
-            // Drill into generic folders (e.g. custom TV content not parsed as Series)
+        case "Folder", "CollectionFolder", "PhotoAlbum":
+            // Drill into generic folders (e.g. custom TV content not parsed as Series,
+            // or a dated subfolder inside a home videos & photos library)
             let child = Library(id: item.id, name: item.name, collectionType: "folder")
             navigationController?.pushViewController(ItemListVC(library: child), animated: true)
+        case "Photo":
+            showPhoto(at: indexPath.item)
         case "MusicArtist":
             let child = Library(id: item.id, name: item.name, collectionType: "musicArtist")
             navigationController?.pushViewController(ItemListVC(library: child), animated: true)
@@ -305,6 +313,21 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         default:
             navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
         }
+    }
+
+    // MARK: - Photos
+
+    // A home videos folder mixes photos and videos, so the viewer swipes through a
+    // Photo-only projection of the loaded page with the tapped row remapped into it.
+    private func showPhoto(at index: Int) {
+        var photos: [MediaItem] = []
+        var start = 0
+        for i in 0..<items.count where items[i].type == "Photo" {
+            if i == index { start = photos.count }
+            photos.append(items[i])
+        }
+        guard !photos.isEmpty else { return }
+        navigationController?.pushViewController(PhotoVC(items: photos, startAt: start), animated: true)
     }
 
     // MARK: - Audio
