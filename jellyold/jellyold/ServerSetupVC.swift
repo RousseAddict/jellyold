@@ -24,20 +24,17 @@ class ServerSetupVC: UIViewController {
 #endif
     }
 
-    override func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-#if !IOS6_TARGET
-        // Read nav bar bottom once the nav stack is fully wired up
-        topOffset = navigationController?.navigationBar.frame.maxY ?? 64
-#endif
-    }
-
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 #if !IOS6_TARGET
-        // iOS 8/9: build UI once, after topOffset has been set in viewWillAppear
-        guard !didBuildUI, topOffset > 0 else { return }
+        // iOS 8/9: build UI once, at layout time. topLayoutGuide is the only value
+        // that's correct here — navigationBar.frame.maxY is still 44 (status bar inset
+        // not yet applied) during the first viewWillAppear, which slid the logo under
+        // the bar. topLayoutGuide is also 0 for an opaque bar, where the view is
+        // already inset by UIKit.
+        guard !didBuildUI else { return }
         didBuildUI = true
+        topOffset = topLayoutGuide.length
         buildUI()
 #endif
     }
