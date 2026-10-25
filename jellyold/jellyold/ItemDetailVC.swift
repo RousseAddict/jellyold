@@ -566,37 +566,119 @@ class ItemDetailVC: UIViewController {
 
         let isAudio = item.type == "Audio"
         let kind: CastController.Kind = isAudio ? .audio : .video
-        // The Chromecast fetches this URL itself over the LAN, so it must be the
+        // The Chromecast fetches these URLs itself over the LAN, so they must be the
         // real server URL — LocalStreamProxy binds to 127.0.0.1 and is unreachable
         // from the device.
-        guard let url = isAudio ? castAudioURL() : streamURL(quality: quality ?? .original) else { return }
+        let sources = isAudio ? audioCastSources() : videoCastSources(quality: quality ?? .original)
 
         let start = CastController.shared.savedResumePosition(for: item, kind: kind)
         CastController.shared.start(item: item, kind: kind, device: device,
-                                    url: url.absoluteString,
-                                    contentType: isAudio ? "audio/mpeg" : "video/mp4",
-                                    startTime: start)
+                                    sources: sources, startTime: start)
+        guard CastController.shared.isCasting else { return }
         navigationController?.pushViewController(CastVC(), animated: true)
     }
 
-    // Forces an mp3 response rather than reusing AudioPlayer's wider Container list:
-    // the receiver is handed a fixed contentType up front, so the stream it actually
-    // gets back has to match it deterministically.
-    private func castAudioURL() -> URL? {
+    // The URL builders below capture values, never self: CastController keeps them for as
+    // long as the cast runs, well after this screen is popped.
+
+    // HLS first. Jellyfin publishes the whole segment list up front (a VOD playlist), so the
+    // receiver knows the real length and can seek anywhere — asking for a segment past the
+    // transcode head makes Jellyfin restart ffmpeg there. The progressive mp4 is kept as a
+    // fallback for a receiver that rejects the playlist; being chunked with no length it can
+    // only play forward, so seeking re-requests it from the new position.
+    private func videoCastSources(quality: DownloadQuality) -> [CastSource] {
+        let itemId = item.id
+        let audioIndex = selectedAudioIndex
+        let subtitleIndex = selectedSubtitleIndex
+        return [
+            CastSource(contentType: "application/x-mpegURL", seeksByReloading: false) { _ in
+                ItemDetailVC.hlsURL(itemId: itemId, quality: quality,
+                                    audioIndex: audioIndex, subtitleIndex: subtitleIndex)?.absoluteString
+            },
+            CastSource(contentType: "video/mp4", seeksByReloading: true) { t in
+                ItemDetailVC.streamURL(itemId: itemId, quality: quality, audioIndex: audioIndex,
+                                       subtitleIndex: subtitleIndex, startTime: t)?.absoluteString
+            }
+        ]
+    }
+
+    // An mp3 file goes out untouched with a Content-Length, so the receiver seeks it itself
+    // and shows its real length. Anything else is transcoded to a chunked mp3 it can only
+    // play forward, so seeking re-requests the stream from the new position.
+    private func audioCastSources() -> [CastSource] {
+        let itemId = item.id
+        if fileInfo?.container?.lowercased() == "mp3" {
+            return [CastSource(contentType: "audio/mpeg", seeksByReloading: false) { _ in
+                ItemDetailVC.castAudioURL(itemId: itemId, direct: true, startTime: 0)?.absoluteString
+            }]
+        }
+        return [CastSource(contentType: "audio/mpeg", seeksByReloading: true) { t in
+            ItemDetailVC.castAudioURL(itemId: itemId, direct: false, startTime: t)?.absoluteString
+        }]
+    }
+
+    private static func hlsURL(itemId: String, quality: DownloadQuality,
+                               audioIndex: Int?, subtitleIndex: Int?) -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
-              let token = JellyfinServer.accessToken,
-              let userId = JellyfinServer.userId else { return nil }
-        let params = [
+              let token = JellyfinServer.accessToken else { return nil }
+        var params = [
             "api_key=\(token)",
-            "UserId=\(userId)",
+            "MediaSourceId=\(itemId)",
             "DeviceId=jellyold-device-01",
-            "MaxStreamingBitrate=320000",
-            "Container=mp3",
-            "TranscodingContainer=mp3",
-            "TranscodingProtocol=http",
-            "AudioCodec=mp3"
-        ].joined(separator: "&")
-        return URL(string: "\(serverURL)/Audio/\(item.id)/universal?\(params)")
+            "PlaySessionId=\(newPlaySessionId())",
+            "VideoCodec=h264",
+            "AudioCodec=aac",
+            "SegmentContainer=ts",
+            // A single rendition — the receiver mustn't hop between variants Jellyfin
+            // would each have to transcode.
+            "EnableAdaptiveBitrateStreaming=false"
+        ]
+        if quality == .original {
+            // Remux when the codecs already fit, same as the progressive Original.
+            params.append("AllowVideoStreamCopy=true")
+            params.append("AllowAudioStreamCopy=true")
+        } else {
+            params.append("AllowVideoStreamCopy=false")
+            if let w = quality.maxWidth { params.append("MaxWidth=\(w)") }
+            if let vb = quality.videoBitrate { params.append("VideoBitRate=\(vb)") }
+            if let ab = quality.audioBitrate { params.append("AudioBitRate=\(ab)") }
+        }
+        if let audioIdx = audioIndex {
+            params.append("AudioStreamIndex=\(audioIdx)")
+        }
+        if let subIdx = subtitleIndex {
+            params.append("SubtitleStreamIndex=\(subIdx)")
+            params.append("SubtitleMethod=Encode")
+        }
+        return URL(string: "\(serverURL)/Videos/\(itemId)/master.m3u8?\(params.joined(separator: "&"))")
+    }
+
+    // `direct` serves the file as-is (only valid for an mp3 source). Otherwise it always goes
+    // through ffmpeg (no Static) so the bytes are mp3 whatever the source — matching the
+    // contentType the receiver was handed — and StartTimeTicks is honoured.
+    private static func castAudioURL(itemId: String, direct: Bool, startTime: Double) -> URL? {
+        guard let serverURL = JellyfinServer.serverURL,
+              let token = JellyfinServer.accessToken else { return nil }
+        var params = [
+            "api_key=\(token)",
+            "DeviceId=jellyold-device-01",
+            "PlaySessionId=\(newPlaySessionId())"
+        ]
+        if direct {
+            params.append("Static=true")
+        } else {
+            params.append("AudioCodec=mp3")
+            params.append("AudioBitRate=320000")
+            params.append("MaxAudioChannels=2")
+            if startTime > 0 { params.append("StartTimeTicks=\(Int64(startTime * 10_000_000))") }
+        }
+        return URL(string: "\(serverURL)/Audio/\(itemId)/stream.mp3?\(params.joined(separator: "&"))")
+    }
+
+    // A unique PlaySessionId per request: Jellyfin keys a running transcode on it, and a
+    // reused one hands back the old job (from its old start position) instead of a new one.
+    private static func newPlaySessionId() -> String {
+        return UUID().uuidString.replacingOccurrences(of: "-", with: "")
     }
 
     // MARK: - Download
@@ -689,17 +771,23 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
-    // Shared by the download and the cast paths — both want a plain, self-contained
-    // mp4 the fetcher (the phone, or the Chromecast) can pull over HTTP.
     private func streamURL(quality: DownloadQuality) -> URL? {
+        return ItemDetailVC.streamURL(itemId: item.id, quality: quality, audioIndex: selectedAudioIndex,
+                                      subtitleIndex: selectedSubtitleIndex, startTime: 0)
+    }
+
+    // Shared by the download and the cast-fallback paths — both want a plain, self-contained
+    // mp4 the fetcher (the phone, or the Chromecast) can pull over HTTP. `startTime` starts
+    // the stream mid-file (honoured because Direct Play is off, so it always goes through ffmpeg).
+    private static func streamURL(itemId: String, quality: DownloadQuality, audioIndex: Int?,
+                                  subtitleIndex: Int?, startTime: Double) -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
-        let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
         var params = [
             "api_key=\(token)",
-            "MediaSourceId=\(item.id)",
+            "MediaSourceId=\(itemId)",
             "DeviceId=jellyold-device-01",
-            "PlaySessionId=\(sessionId)",
+            "PlaySessionId=\(newPlaySessionId())",
             "VideoCodec=h264",
             "AudioCodec=aac",
             // Direct Play (the old Static=true behaviour) hands back the source file
@@ -714,15 +802,16 @@ class ItemDetailVC: UIViewController {
             if let w = quality.maxWidth { params.append("MaxWidth=\(w)") }
             if let vb = quality.videoBitrate { params.append("VideoBitRate=\(vb)") }
             if let ab = quality.audioBitrate { params.append("AudioBitRate=\(ab)") }
-            if let audioIdx = selectedAudioIndex {
+            if let audioIdx = audioIndex {
                 params.append("AudioStreamIndex=\(audioIdx)")
             }
-            if let subIdx = selectedSubtitleIndex {
+            if let subIdx = subtitleIndex {
                 params.append("SubtitleStreamIndex=\(subIdx)")
                 params.append("SubtitleMethod=Encode")
             }
         }
-        return URL(string: "\(serverURL)/Videos/\(item.id)/stream.mp4?\(params.joined(separator: "&"))")
+        if startTime > 0 { params.append("StartTimeTicks=\(Int64(startTime * 10_000_000))") }
+        return URL(string: "\(serverURL)/Videos/\(itemId)/stream.mp4?\(params.joined(separator: "&"))")
     }
 
     private func beginDownload(quality: DownloadQuality) {

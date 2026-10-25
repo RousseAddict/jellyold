@@ -8,19 +8,28 @@ import Foundation
 //
 // THREADING: everything TLS runs on ONE background thread (`ioLoop`). OpenSSL SSL_read /
 // SSL_write on the same SSL object are not thread-safe, so the socket is never touched from
-// two threads. Public methods (play/pause/seek/stop) just enqueue an outbound frame and the
-// ioLoop flushes it between recv poll cycles. Callbacks fire back on the main thread.
+// two threads. Public methods (play/pause/seek/load/stop) enqueue a command that the ioLoop
+// runs between recv poll cycles, so all session state is only ever read and written on that
+// one thread. Callbacks fire back on the main thread.
 //
 // NOTE: the Chromecast fetches the media URL itself, so it must be the real Jellyfin server
 // URL — LocalStreamProxy (127.0.0.1) is unreachable from the device and must not be used here.
+
+// Why the receiver stopped playing the current media.
+enum CastEnd {
+    case finished              // played to the end
+    case failed(String)        // LOAD rejected, or the receiver hit a playback error
+    case stoppedRemotely       // stopped from the TV / another sender took the device
+}
 
 final class CastSession: NSObject {
 
     private let device: CastDevice
     private var handle: CurlHandle?
 
-    // Outbound frames waiting to be written by the ioLoop, guarded by `lock`.
+    // Outbound frames + commands waiting for the ioLoop, guarded by `lock`.
     private var outbound = [Data]()
+    private var commands = [() -> Void]()
     private let lock = NSLock()
 
     private var running = false
@@ -29,17 +38,33 @@ final class CastSession: NSObject {
     // The app's transport channel id, learned from RECEIVER_STATUS after LAUNCH.
     private var transportId: String?
     private var mediaSessionId: Int?
+    // Media sessions replaced by a newer LOAD. The receiver still reports their teardown
+    // (IDLE/INTERRUPTED) after the new LOAD, which must not read as "playback ended".
+    private var staleMediaSessionIds = Set<Int>()
+    // requestId of the latest LOAD: errors echoing an older id belong to a superseded load.
+    private var loadRequestId = 0
+    // True from a LOAD until the receiver reports the new media. In that window a status
+    // for a media session older than the LOAD (the receiver numbers them upwards) is the
+    // previous media winding down, even if its id was never seen before (a reload sent
+    // before the first status arrived).
+    private var awaitingLoad = false
+    private var maxSeenMediaSessionId = 0
+    private var firstNewMediaSessionId = 0
+    // Set once onEnded fired for the current LOAD. The receiver often reports one failure
+    // twice (LOAD_FAILED + an IDLE/ERROR status), and the second must not end a fallback.
+    private var endReported = false
 
-    // The media URL to LOAD once the receiver app is running.
+    // The media to LOAD once the receiver app is running.
     private var pendingMediaURL: String?
     private var pendingContentType = "video/mp4"
     private var pendingStartTime: Double = 0
     private var pendingMetadata: [String: Any]?
-
-    // Last known playback progress, updated from MEDIA_STATUS (reported via onProgress).
-    private var mediaDuration: Double = 0
-    private var mediaCurrentTime: Double = 0
-    private var isPlayingRemote = false
+    private var pendingAutoplay = true
+    // Added to every position the receiver reports. Non-zero when the URL itself starts
+    // mid-file (a re-requested progressive stream), whose timeline the receiver sees as 0-based.
+    private var timeOffset: Double = 0
+    // A SEEK asked for before the receiver assigned a mediaSessionId; sent with the first status.
+    private var deferredSeek: Double?
 
     private var lastHeartbeat = Date()
     private var lastStatusPoll = Date()
@@ -47,63 +72,86 @@ final class CastSession: NSObject {
     private static let senderId = "sender-0"
     private static let platformReceiver = "receiver-0"
 
-    // Reports human-readable state transitions on the main thread.
+    // Reports connection-level state transitions on the main thread.
     var onState: ((String) -> Void)?
-    // Reports playback progress on the main thread: (currentSeconds, durationSeconds, isPlaying).
-    var onProgress: ((Double, Double, Bool) -> Void)?
-    // Fires on the main thread when the receiver reports the media finished or failed to load.
-    var onEnded: ((String) -> Void)?
-
-    // Last progress seen, so CastController can persist a resume position on stop.
-    private(set) var lastKnownTime: Double = 0
+    // Reports playback on the main thread: (currentSeconds, receiverDurationSeconds, playerState).
+    // currentSeconds already includes timeOffset; playerState is the receiver's raw
+    // PLAYING / PAUSED / BUFFERING / IDLE.
+    var onProgress: ((Double, Double, String) -> Void)?
+    // Fires on the main thread when the current media stops for good.
+    var onEnded: ((CastEnd) -> Void)?
 
     init(device: CastDevice) {
         self.device = device
         super.init()
     }
 
-    // MARK: - Public API (thread-safe — just enqueues / kicks the ioLoop)
+    // MARK: - Public API (thread-safe — enqueues work for the ioLoop)
 
     // Start the session and, once the receiver app is up, LOAD + play this URL.
-    // `startTime` seeds the receiver's playback position (resume support).
+    // `startTime` seeds the receiver's playback position (resume support); `timeOffset`
+    // is where the URL itself starts in the item (see the property).
     func start(mediaURL: String,
                contentType: String = "video/mp4",
                startTime: Double = 0,
+               timeOffset: Double = 0,
                metadata: [String: Any]? = nil) {
         pendingMediaURL = mediaURL
         pendingContentType = contentType
         pendingStartTime = startTime
+        self.timeOffset = timeOffset
         pendingMetadata = metadata
         running = true
-        DebugLog.shared.log("CAST", "start dev=\(device.name) \(device.host):\(device.port) type=\(contentType) at=\(Int(startTime))s url=\(DebugLog.redact(mediaURL))")
+        DebugLog.shared.log("CAST", "start dev=\(device.name) \(device.host):\(device.port) type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s url=\(DebugLog.redact(mediaURL))")
         let t = Thread(target: self, selector: #selector(ioLoop), object: nil)
         t.stackSize = 512 * 1024
         t.start()
     }
 
-    func play()  { sendMedia(["type": "PLAY"]) }
-    func pause() { sendMedia(["type": "PAUSE"]) }
-
-    func seek(to seconds: Double) {
-        let target = max(0, seconds)
-        sendMedia(["type": "SEEK", "currentTime": target])
+    // Replace the media on the running receiver app — used to fall back to another
+    // source and to "seek" a stream the receiver can't seek itself.
+    func load(mediaURL: String, contentType: String, startTime: Double, timeOffset: Double,
+              autoplay: Bool) {
+        perform {
+            DebugLog.shared.log("CAST", "reload type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s autoplay=\(autoplay) url=\(DebugLog.redact(mediaURL))")
+            self.pendingMediaURL = mediaURL
+            self.pendingContentType = contentType
+            self.pendingStartTime = startTime
+            self.timeOffset = timeOffset
+            self.pendingAutoplay = autoplay
+            self.deferredSeek = nil
+            if let msid = self.mediaSessionId { self.staleMediaSessionIds.insert(msid) }
+            self.mediaSessionId = nil
+            if let tid = self.transportId { self.loadMedia(mediaURL, transport: tid) }
+        }
     }
 
-    // Relative seek for the skip buttons; clamped to the known duration.
-    func seek(by delta: Double) {
-        var target = lastKnownTime + delta
-        if mediaDuration > 0 { target = min(target, mediaDuration - 1) }
-        seek(to: target)
+    func play()  { perform { self.sendMedia(["type": "PLAY"]) } }
+    func pause() { perform { self.sendMedia(["type": "PAUSE"]) } }
+
+    // Absolute position in the item. Only valid while timeOffset is 0 (a natively seekable
+    // source) — CastController re-requests offset streams via load() instead.
+    func seek(to seconds: Double) {
+        perform {
+            let target = max(0, seconds - self.timeOffset)
+            if self.mediaSessionId == nil {
+                self.deferredSeek = target
+            } else {
+                self.sendMedia(["type": "SEEK", "currentTime": target])
+            }
+        }
     }
 
     // Stop playback + close the session.
     func stop() {
-        if let tid = transportId {
-            enqueue(namespace: CastNS.receiver, destination: CastSession.platformReceiver,
-                    json: ["type": "STOP", "sessionId": tid])
+        perform {
+            if let tid = self.transportId {
+                self.enqueue(namespace: CastNS.receiver, destination: CastSession.platformReceiver,
+                             json: ["type": "STOP", "sessionId": tid])
+            }
         }
         running = false
-        DebugLog.shared.log("CAST", "stop at=\(Int(lastKnownTime))s")
+        DebugLog.shared.log("CAST", "stop")
     }
 
     // MARK: - I/O loop (single thread; owns all TLS reads/writes)
@@ -119,10 +167,11 @@ final class CastSession: NSObject {
             let msg = String(cString: curl_bridge_strerror(rc))
             DebugLog.shared.log("CAST", "connect FAILED rc=\(rc) (\(msg))")
             report("connect failed (\(msg))")
+            reportEnd(.failed("connect failed"))
             return
         }
         DebugLog.shared.log("CAST", "connected \(device.name)")
-        report("connected \(device.name)")
+        report("connected")
 
         // Virtual-connect + launch the default media receiver.
         enqueue(namespace: CastNS.connection, destination: CastSession.platformReceiver,
@@ -133,6 +182,7 @@ final class CastSession: NSObject {
         var recvBuf = [UInt8](repeating: 0, count: 16 * 1024)
 
         while running {
+            runCommands()
             flushOutbound(h)
             heartbeatIfDue()
             statusPollIfDue()
@@ -141,6 +191,7 @@ final class CastSession: NSObject {
             if n < 0 {
                 DebugLog.shared.log("CAST", "disconnected")
                 report("disconnected")
+                if running && !endReported { reportEnd(.failed("disconnected")) }
                 break
             }
             if n > 0 {
@@ -149,10 +200,26 @@ final class CastSession: NSObject {
             }
         }
 
-        // Best-effort: tell the device we're leaving.
+        // stop() flips `running` right after queueing its STOP, so the loop can exit
+        // before running it — drain once more, then tell the device we're leaving.
+        runCommands()
         enqueue(namespace: CastNS.connection, destination: transportId ?? CastSession.platformReceiver,
                 json: ["type": "CLOSE"])
         flushOutbound(h)
+    }
+
+    private func perform(_ block: @escaping () -> Void) {
+        lock.lock()
+        commands.append(block)
+        lock.unlock()
+    }
+
+    private func runCommands() {
+        lock.lock()
+        let pending = commands
+        commands.removeAll()
+        lock.unlock()
+        for block in pending { block() }
     }
 
     // Pull every complete UInt32-length-prefixed frame out of the inbound buffer and handle it.
@@ -217,13 +284,8 @@ final class CastSession: NSObject {
             if type == "RECEIVER_STATUS" { handleReceiverStatus(obj) }
         case CastNS.media:
             if type == "MEDIA_STATUS" { handleMediaStatus(obj) }
-            // The receiver rejects a URL it can't fetch or decode. Surface it —
-            // otherwise the UI just sits on "loading media" forever.
             if type == "LOAD_FAILED" || type == "LOAD_CANCELLED" || type == "INVALID_REQUEST" {
-                let reason = (obj["reason"] as? String) ?? type
-                DebugLog.shared.log("CAST", "LOAD failed: \(type) reason=\(reason)")
-                report("failed: \(reason)")
-                DispatchQueue.main.async { [weak self] in self?.onEnded?(reason) }
+                handleMediaError(type, obj)
             }
         default:
             break
@@ -246,28 +308,80 @@ final class CastSession: NSObject {
 
     private func handleMediaStatus(_ obj: [String: Any]) {
         guard let arr = obj["status"] as? [[String: Any]], let first = arr.first else { return }
-        if let msid = (first["mediaSessionId"] as? NSNumber)?.intValue { mediaSessionId = msid }
         // NSNumber bridging: `as? Double`/`as? Int` silently fail on the 5.1.5 runtime.
-        if let cur = (first["currentTime"] as? NSNumber)?.doubleValue { mediaCurrentTime = cur }
-        // duration lives on the nested media object, only present on the first status after LOAD.
-        if let media = first["media"] as? [String: Any],
-           let dur = (media["duration"] as? NSNumber)?.doubleValue, dur > 0 {
-            mediaDuration = dur
+        let rid = (obj["requestId"] as? NSNumber)?.intValue ?? 0
+        let msid = (first["mediaSessionId"] as? NSNumber)?.intValue
+        if let m = msid {
+            if staleMediaSessionIds.contains(m) { return }
+            if awaitingLoad && rid != loadRequestId && m < firstNewMediaSessionId {
+                staleMediaSessionIds.insert(m)
+                return
+            }
+            maxSeenMediaSessionId = max(maxSeenMediaSessionId, m)
         }
-        let playerState = (first["playerState"] as? String) ?? ""
-        if !playerState.isEmpty {
-            isPlayingRemote = (playerState == "PLAYING" || playerState == "BUFFERING")
-            report("player: \(playerState)")
-        }
-        lastKnownTime = mediaCurrentTime
-        let cur = mediaCurrentTime, dur = mediaDuration, playing = isPlayingRemote
-        DispatchQueue.main.async { [weak self] in self?.onProgress?(cur, dur, playing) }
 
-        // IDLE with reason FINISHED is the receiver's end-of-media signal.
-        if playerState == "IDLE", (first["idleReason"] as? String) == "FINISHED" {
-            DebugLog.shared.log("CAST", "media finished")
-            DispatchQueue.main.async { [weak self] in self?.onEnded?("FINISHED") }
+        let playerState = (first["playerState"] as? String) ?? ""
+        let idleReason = (first["idleReason"] as? String) ?? ""
+        let terminal = playerState == "IDLE" && !idleReason.isEmpty
+
+        if terminal {
+            // Terminal: never poll or command this media session again.
+            if let m = msid { staleMediaSessionIds.insert(m) }
+            // No id at all can't be placed — while a LOAD is outstanding, only trust it
+            // when it answers that LOAD (a real load failure also arrives as LOAD_FAILED).
+            if endReported || (awaitingLoad && msid == nil && rid != loadRequestId) {
+                DebugLog.shared.log("CAST", "player IDLE reason=\(idleReason) msid=\(msid ?? -1) (ignored)")
+                return
+            }
+            mediaSessionId = nil
+            awaitingLoad = false
+            DebugLog.shared.log("CAST", "player IDLE reason=\(idleReason)")
+            let end: CastEnd
+            switch idleReason {
+            case "FINISHED": end = .finished
+            case "ERROR":    end = .failed("playback error")
+            default:         end = .stoppedRemotely     // CANCELLED / INTERRUPTED
+            }
+            reportEnd(end)
+            return
         }
+
+        if let m = msid, mediaSessionId != m {
+            mediaSessionId = m
+            awaitingLoad = false
+            if let target = deferredSeek {
+                deferredSeek = nil
+                sendMedia(["type": "SEEK", "currentTime": target])
+            }
+        }
+
+        guard let cur = (first["currentTime"] as? NSNumber)?.doubleValue else { return }
+        // duration lives on the nested media object, only present on some statuses.
+        var dur: Double = 0
+        if let media = first["media"] as? [String: Any],
+           let d = (media["duration"] as? NSNumber)?.doubleValue, d > 0 {
+            dur = d
+        }
+        let position = cur + timeOffset
+        DispatchQueue.main.async { [weak self] in self?.onProgress?(position, dur, playerState) }
+    }
+
+    private func handleMediaError(_ type: String, _ obj: [String: Any]) {
+        let reason = (obj["reason"] as? String) ?? type
+        let rid = (obj["requestId"] as? NSNumber)?.intValue ?? 0
+        // Only an error answering the latest LOAD ends playback. A rejected SEEK/PLAY, or
+        // the LOAD_CANCELLED a superseded reload gets, leaves the current media running.
+        guard rid == loadRequestId, type != "LOAD_CANCELLED", !endReported else {
+            DebugLog.shared.log("CAST", "\(type) reason=\(reason) req=\(rid) (ignored, load=\(loadRequestId))")
+            return
+        }
+        DebugLog.shared.log("CAST", "LOAD failed: \(type) reason=\(reason)")
+        reportEnd(.failed(reason))
+    }
+
+    private func reportEnd(_ end: CastEnd) {
+        endReported = true
+        DispatchQueue.main.async { [weak self] in self?.onEnded?(end) }
     }
 
     // MARK: - Outbound builders
@@ -281,20 +395,20 @@ final class CastSession: NSObject {
 
     private func loadMedia(_ url: String, transport: String) {
         requestId += 1
+        loadRequestId = requestId
+        awaitingLoad = true
+        endReported = false
+        firstNewMediaSessionId = maxSeenMediaSessionId + 1
         var media: [String: Any] = [
             "contentId": url,
             "contentType": pendingContentType,
-            // A Jellyfin transcode has no Content-Length, so it can't be treated
-            // as a seekable buffered file until the receiver probes it; BUFFERED
-            // is still correct for the direct-stream/remux case and the receiver
-            // downgrades itself when it can't seek.
             "streamType": "BUFFERED"
         ]
         if let meta = pendingMetadata { media["metadata"] = meta }
         let payload: [String: Any] = [
             "type": "LOAD",
             "requestId": requestId,
-            "autoplay": true,
+            "autoplay": pendingAutoplay,
             "currentTime": pendingStartTime,
             "media": media
         ]

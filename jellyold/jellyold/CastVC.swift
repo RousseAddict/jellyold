@@ -22,10 +22,13 @@ class CastVC: UIViewController {
     private let playPauseBtn = UIButton(type: .custom)
     private let forwardBtn = UIButton(type: .custom)
     private let stopBtn = UIButton(type: .custom)
+    // Replaces the play/pause glyph while the receiver is buffering or catching up on a seek.
+    private let busySpinner = UIActivityIndicatorView(style: .white)
 
     private var duration: Double = 0
     private var currentTime: Double = 0
-    private var lastDisplayedSecond = -1
+    private var isPlaying = false
+    private var showingBusy = false
     private var lastBuiltWidth: CGFloat = 0
 
     private static let skipBack: Double = -10
@@ -45,6 +48,7 @@ class CastVC: UIViewController {
         refreshTrack()
         currentTime = CastController.shared.currentTime
         duration = CastController.shared.duration
+        isPlaying = CastController.shared.isPlaying
         stateLabel.text = CastController.shared.state
         refreshTransport()
         updateProgressUI()
@@ -98,8 +102,13 @@ class CastVC: UIViewController {
         stateLabel.textAlignment = .center
         scrollView.addSubview(stateLabel)
 
+        // Dragging only previews the target time; one seek goes out on release. Seeking a
+        // cast restarts the server transcode, so a seek per valueChanged would queue dozens.
         slider.minimumTrackTintColor = accentColor
         slider.addTarget(self, action: #selector(sliderMoved), for: .valueChanged)
+        slider.addTarget(self, action: #selector(sliderReleased), for: [.touchUpInside, .touchUpOutside])
+        slider.addTarget(self, action: #selector(sliderCancelled), for: .touchCancel)
+        slider.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(sliderTapped(_:))))
         scrollView.addSubview(slider)
 
         for label in [currentTimeLabel, remainingLabel] {
@@ -121,6 +130,9 @@ class CastVC: UIViewController {
         playPauseBtn.layer.cornerRadius = 35
         playPauseBtn.layer.borderWidth = 2
         playPauseBtn.layer.borderColor = UIColor(white: 0.4, alpha: 1).cgColor
+        busySpinner.hidesWhenStopped = true
+        busySpinner.isUserInteractionEnabled = false
+        playPauseBtn.addSubview(busySpinner)
 
         stopBtn.setTitle("Stop Casting", for: .normal)
         stopBtn.setTitleColor(.white, for: .normal)
@@ -166,6 +178,7 @@ class CastVC: UIViewController {
             let ctrlH: CGFloat = 70
             backBtn.frame = CGRect(x: 20, y: y, width: 70, height: ctrlH)
             playPauseBtn.frame = CGRect(x: (w - 70) / 2, y: y, width: 70, height: ctrlH)
+            busySpinner.center = CGPoint(x: 35, y: ctrlH / 2)
             forwardBtn.frame = CGRect(x: w - 90, y: y, width: 70, height: ctrlH)
             y += ctrlH + 20
         }
@@ -186,17 +199,36 @@ class CastVC: UIViewController {
             guard let self = self else { return }
             self.currentTime = cur
             self.duration = dur
-            self.playPauseBtn.isSelected = !playing
+            self.isPlaying = playing
+            self.refreshTransport()
             self.updateProgressUI()
         }
-        CastController.shared.onEnded = { [weak self] reason in
+        CastController.shared.onEnded = { [weak self] end in
             guard let self = self else { return }
-            if reason != "FINISHED" {
-                self.stateLabel.text = "failed: \(reason)"
-            }
             CastController.shared.stop()
-            self.navigationController?.popViewController(animated: true)
+            if case .failed(let reason) = end {
+                self.showFailure(reason)
+            } else {
+                self.navigationController?.popViewController(animated: true)
+            }
         }
+    }
+
+    // Leaves the screen once the alert is acknowledged (iOS 8), or straight away under
+    // UIAlertView, which lives in its own window and survives the pop.
+    private func showFailure(_ reason: String) {
+        let message = "The Chromecast couldn't play this (\(reason)). Try a lower quality."
+#if IOS6_TARGET
+        UIAlertView(title: "Casting stopped", message: message,
+                    delegate: nil, cancelButtonTitle: "OK").show()
+        navigationController?.popViewController(animated: true)
+#else
+        let alert = UIAlertController(title: "Casting stopped", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { [weak self] _ in
+            self?.navigationController?.popViewController(animated: true)
+        })
+        present(alert, animated: true)
+#endif
     }
 
     private func refreshTrack() {
@@ -209,23 +241,40 @@ class CastVC: UIViewController {
     }
 
     private func refreshTransport() {
-        playPauseBtn.isSelected = !CastController.shared.isPlaying
+        playPauseBtn.isSelected = !isPlaying
+        let busy = CastController.shared.isBuffering || CastController.shared.isSeeking
+        guard busy != showingBusy else { return }
+        showingBusy = busy
+        if busy {
+            playPauseBtn.setImage(nil, for: .normal)
+            playPauseBtn.setImage(nil, for: .selected)
+            busySpinner.startAnimating()
+        } else {
+            busySpinner.stopAnimating()
+            playPauseBtn.setImage(UIImage(named: "pause"), for: .normal)
+            playPauseBtn.setImage(UIImage(named: "play"), for: .selected)
+        }
     }
 
     private func updateProgressUI() {
-        // duration falls back to runTimeTicks when the receiver hasn't reported one
-        // yet (it only arrives with the first MEDIA_STATUS after LOAD).
+        // duration is the item's runtime; only an item without one waits for the receiver.
         let hasDuration = duration > 0
         if slider.isEnabled != hasDuration { slider.isEnabled = hasDuration }
-        if hasDuration && !slider.isTracking {
+        // While dragging, the thumb and labels belong to the finger (see sliderMoved).
+        guard !slider.isTracking else { return }
+        if hasDuration {
             let v = Float(min(1, max(0, currentTime / duration)))
             if slider.value != v { slider.value = v }
         }
-        let s = Int(currentTime)
-        guard s != lastDisplayedSecond else { return }
-        lastDisplayedSecond = s
-        currentTimeLabel.text = fmt(currentTime)
-        remainingLabel.text = hasDuration ? "-\(fmt(max(0, duration - currentTime)))" : "--:--"
+        showTimes(at: currentTime, scrubbing: false)
+    }
+
+    private func showTimes(at t: Double, scrubbing: Bool) {
+        currentTimeLabel.text = fmt(t)
+        remainingLabel.text = duration > 0 ? "-\(fmt(max(0, duration - t)))" : "--:--"
+        let color = scrubbing ? UIColor.white : UIColor(white: 0.5, alpha: 1)
+        currentTimeLabel.textColor = color
+        remainingLabel.textColor = color
     }
 
     private func fmt(_ s: Double) -> String {
@@ -241,8 +290,30 @@ class CastVC: UIViewController {
     @objc private func forwardTapped()   { CastController.shared.seek(by: CastVC.skipForward) }
 
     @objc private func sliderMoved() {
+        guard duration > 0, slider.isTracking else { return }
+        showTimes(at: Double(slider.value) * duration, scrubbing: true)
+    }
+
+    @objc private func sliderReleased() {
         guard duration > 0 else { return }
         CastController.shared.seek(to: Double(slider.value) * duration)
+    }
+
+    @objc private func sliderCancelled() {
+        updateProgressUI()
+    }
+
+    // UISlider only moves by dragging its thumb; a tap on the track jumps there directly.
+    @objc private func sliderTapped(_ g: UITapGestureRecognizer) {
+        guard duration > 0 else { return }
+        let p = g.location(in: slider)
+        let track = slider.trackRect(forBounds: slider.bounds)
+        let thumb = slider.thumbRect(forBounds: slider.bounds, trackRect: track, value: slider.value)
+        // A tap on the thumb itself isn't a request to move.
+        guard !thumb.insetBy(dx: -6, dy: -6).contains(p), track.width > 0 else { return }
+        let frac = Double(min(1, max(0, (p.x - track.minX) / track.width)))
+        slider.value = Float(frac)
+        CastController.shared.seek(to: frac * duration)
     }
 
     @objc private func stopTapped() {
