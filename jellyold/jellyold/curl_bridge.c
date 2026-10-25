@@ -1,6 +1,7 @@
 #include "curl_bridge.h"
 #include <curl/curl.h>
 #include <pthread.h>
+#include <poll.h>
 
 /* Shared DNS/connection/TLS-session cache across every easy handle, so
    concurrent proxy connections to the same Jellyfin host reuse lookups and
@@ -108,6 +109,79 @@ void curl_bridge_set_headers(CurlHandle h, void *list) {
 
 void curl_bridge_headers_free(void *list) {
     curl_slist_free_all((struct curl_slist *)list);
+}
+
+/* --- Raw TLS socket mode (Chromecast CASTV2) --- */
+
+static int curl_bridge_active_fd(CURL *e) {
+    curl_socket_t sock = CURL_SOCKET_BAD;
+    if (curl_easy_getinfo(e, CURLINFO_ACTIVESOCKET, &sock) != CURLE_OK) return -1;
+    if (sock == CURL_SOCKET_BAD) return -1;
+    return (int)sock;
+}
+
+static int curl_bridge_poll(int fd, short events, long timeout_ms) {
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = events;
+    pfd.revents = 0;
+    int r = poll(&pfd, 1, (int)timeout_ms);
+    if (r < 0) return -1;
+    if (r == 0) return 0;
+    return 1;
+}
+
+int curl_bridge_connect_only(CurlHandle h, const char *host, long port) {
+    CURL *e = (CURL *)h;
+    /* A Chromecast presents a self-signed device cert — don't verify. */
+    curl_easy_setopt(e, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(e, CURLOPT_SSL_VERIFYHOST, 0L);
+    curl_easy_setopt(e, CURLOPT_URL, host);
+    curl_easy_setopt(e, CURLOPT_PORT, port);
+    /* Force a TLS layer even though the bare host carries no https scheme. */
+    curl_easy_setopt(e, CURLOPT_DEFAULT_PROTOCOL, "https");
+    curl_easy_setopt(e, CURLOPT_USE_SSL, (long)CURLUSESSL_ALL);
+    /* CONNECT_ONLY = DNS + TCP + TLS handshake, then stop and expose the socket. */
+    curl_easy_setopt(e, CURLOPT_CONNECT_ONLY, 1L);
+    return (int)curl_easy_perform(e);
+}
+
+long curl_bridge_send(CurlHandle h, const void *buf, long len) {
+    CURL *e = (CURL *)h;
+    const char *p = (const char *)buf;
+    long remaining = len;
+    while (remaining > 0) {
+        size_t sent = 0;
+        CURLcode rc = curl_easy_send(e, p, (size_t)remaining, &sent);
+        if (rc == CURLE_OK) {
+            p += sent;
+            remaining -= (long)sent;
+        } else if (rc == CURLE_AGAIN) {
+            int fd = curl_bridge_active_fd(e);
+            if (fd < 0) return -1;
+            if (curl_bridge_poll(fd, POLLOUT, 15000) <= 0) return -1;   /* timeout or poll error */
+        } else {
+            return -1;
+        }
+    }
+    return len;
+}
+
+long curl_bridge_recv(CurlHandle h, void *buf, long len, long timeout_ms) {
+    CURL *e = (CURL *)h;
+    int fd = curl_bridge_active_fd(e);
+    if (fd < 0) return -1;
+    /* Wait first so we don't spin — curl_easy_recv would just return CURLE_AGAIN. */
+    int w = curl_bridge_poll(fd, POLLIN, timeout_ms);
+    if (w < 0) return -1;
+    if (w == 0) return 0;   /* timeout, no data */
+    size_t got = 0;
+    CURLcode rc = curl_easy_recv(e, buf, (size_t)len, &got);
+    if (rc == CURLE_OK) {
+        return (got == 0) ? -1 : (long)got;   /* 0 bytes on a readable socket = peer closed */
+    }
+    if (rc == CURLE_AGAIN) return 0;   /* readable flag was stale — treat as timeout */
+    return -1;
 }
 
 int curl_bridge_perform(CurlHandle h) {

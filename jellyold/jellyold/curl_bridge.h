@@ -34,6 +34,16 @@ void       *curl_bridge_headers_append(void *list, const char *header);
 void        curl_bridge_set_headers(CurlHandle h, void *list);
 void        curl_bridge_headers_free(void *list);
 
+/* Raw TLS socket mode (used by the Chromecast CASTV2 session).
+   connect_only does DNS + TCP + TLS and then stops, exposing the socket for
+   curl_easy_send/recv — iOS 6's Secure Transport can't negotiate with a
+   Chromecast, so OpenSSL has to own this connection too. Returns a CURLcode. */
+int         curl_bridge_connect_only(CurlHandle h, const char *host, long port);
+/* Blocking write of the whole buffer. Returns len, or -1 on error. */
+long        curl_bridge_send(CurlHandle h, const void *buf, long len);
+/* Returns bytes read, 0 on timeout (no data), -1 on error or peer close. */
+long        curl_bridge_recv(CurlHandle h, void *buf, long len, long timeout_ms);
+
 int         curl_bridge_perform(CurlHandle h);
 long        curl_bridge_response_code(CurlHandle h);
 const char *curl_bridge_strerror(int code);

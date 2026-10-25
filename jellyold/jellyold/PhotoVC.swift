@@ -16,6 +16,11 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
     private var lastBuiltSize: CGSize = .zero
     private var chromeHidden = false
 
+#if IOS6_TARGET
+    private var pendingCastDevices: [CastDevice] = []
+    private var activeActionSheet: UIActionSheet?
+#endif
+
     init(items: [MediaItem], startAt: Int) {
         self.items = items
         self.index = min(max(startAt, 0), max(items.count - 1, 0))
@@ -61,6 +66,10 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
         let prev = UISwipeGestureRecognizer(target: self, action: #selector(swipedPrev))
         prev.direction = .right
         view.addGestureRecognizer(prev)
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            title: "Cast", style: .plain, target: self, action: #selector(castTapped)
+        )
 
         loadCurrent()
     }
@@ -144,6 +153,71 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
         }
     }
 
+    // MARK: - Cast
+
+    // Casts whichever photo is on screen right now. Swiping afterwards does not
+    // follow on the TV — each tap casts one photo.
+    @objc private func castTapped() {
+        if CastController.shared.isCasting {
+            navigationController?.pushViewController(CastVC(), animated: true)
+            return
+        }
+        navigationItem.rightBarButtonItem?.isEnabled = false
+        CastController.shared.discoverDevices { [weak self] devices in
+            guard let self = self else { return }
+            self.navigationItem.rightBarButtonItem?.isEnabled = true
+            guard !devices.isEmpty else {
+#if IOS6_TARGET
+                UIAlertView(title: "No Chromecast found",
+                            message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
+                            delegate: nil, cancelButtonTitle: "OK").show()
+#else
+                let alert = UIAlertController(title: "No Chromecast found",
+                                              message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
+                                              preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: "OK", style: .default))
+                self.present(alert, animated: true)
+#endif
+                return
+            }
+            self.presentDevicePicker(devices)
+        }
+    }
+
+    private func presentDevicePicker(_ devices: [CastDevice]) {
+#if IOS6_TARGET
+        pendingCastDevices = devices
+        let sheet = UIActionSheet(title: "Cast to\u{2026}", delegate: self,
+                                  cancelButtonTitle: nil, destructiveButtonTitle: nil)
+        for d in devices { sheet.addButton(withTitle: d.name) }
+        sheet.addButton(withTitle: "Cancel")
+        sheet.cancelButtonIndex = sheet.numberOfButtons - 1
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Cast to\u{2026}", message: nil, preferredStyle: .actionSheet)
+        for d in devices {
+            alert.addAction(UIAlertAction(title: d.name, style: .default) { [weak self] _ in
+                self?.beginCast(to: d)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
+    private func beginCast(to device: CastDevice) {
+        guard index < items.count,
+              let serverURL = JellyfinServer.serverURL,
+              let token = JellyfinServer.accessToken else { return }
+        let item = items[index]
+        // Sized for a 1080p TV, unlike the 640px cap used for the phone screen.
+        let url = "\(serverURL)/Items/\(item.id)/Images/Primary?maxWidth=1920&quality=90&api_key=\(token)"
+        CastController.shared.start(item: item, kind: .photo, device: device,
+                                    url: url, contentType: "image/jpeg", startTime: 0)
+        navigationController?.pushViewController(CastVC(), animated: true)
+    }
+
     // MARK: - UIScrollViewDelegate
 
     func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
@@ -157,3 +231,14 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
         imageView.center = CGPoint(x: content.width / 2 + x, y: content.height / 2 + y)
     }
 }
+
+#if IOS6_TARGET
+extension PhotoVC: UIActionSheetDelegate {
+    func actionSheet(_ actionSheet: UIActionSheet, clickedButtonAt buttonIndex: Int) {
+        defer { activeActionSheet = nil }
+        guard buttonIndex != actionSheet.cancelButtonIndex,
+              buttonIndex < pendingCastDevices.count else { return }
+        beginCast(to: pendingCastDevices[buttonIndex])
+    }
+}
+#endif

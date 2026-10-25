@@ -59,10 +59,17 @@ class ItemDetailVC: UIViewController {
     private var downloadBtn: UIButton?
     private var downloadPollTimer: Timer?
 
+    private var castBtn: UIButton?
+    private var castSpinner: UIActivityIndicatorView?
+    // The device chosen in the first sheet, held while the quality sheet is up.
+    private var pendingCastDevice: CastDevice?
+
 #if IOS6_TARGET
     private var pendingAudioOptions: [Int] = []
     private var pendingSubtitleOptions: [Int?] = []
     private var pendingDownloadQualities: [DownloadQuality] = []
+    private var pendingCastDevices: [CastDevice] = []
+    private var pendingCastQualities: [DownloadQuality] = []
     private var activeActionSheet: UIActionSheet?
 #endif
 
@@ -187,8 +194,12 @@ class ItemDetailVC: UIViewController {
             y += 8
         }
 
+        // Play shares its row with the cast button. Photos never reach this screen,
+        // so everything that gets here is castable.
+        let castW: CGFloat = 50
+        let gap: CGFloat = 8
         let playBtn = UIButton(type: .custom)
-        playBtn.frame = CGRect(x: 16, y: y, width: w - 32, height: 50)
+        playBtn.frame = CGRect(x: 16, y: y, width: w - 32 - castW - gap, height: 50)
         playBtn.setTitle("Play", for: .normal)
         playBtn.setTitleColor(.white, for: .normal)
         playBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 18)
@@ -196,6 +207,23 @@ class ItemDetailVC: UIViewController {
         playBtn.layer.cornerRadius = 10
         playBtn.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         scrollView.addSubview(playBtn)
+
+        let cast = UIButton(type: .custom)
+        cast.frame = CGRect(x: w - 16 - castW, y: y, width: castW, height: 50)
+        cast.setImage(UIImage(named: "cast"), for: .normal)
+        cast.backgroundColor = accentColor
+        cast.layer.cornerRadius = 10
+        cast.addTarget(self, action: #selector(castTapped), for: .touchUpInside)
+        scrollView.addSubview(cast)
+        castBtn = cast
+
+        // Bonjour discovery runs for a fixed few seconds with no progress signal,
+        // so the glyph swaps for a spinner to show the tap registered.
+        let spinner = UIActivityIndicatorView(style: .white)
+        spinner.frame = cast.bounds
+        spinner.hidesWhenStopped = true
+        cast.addSubview(spinner)
+        castSpinner = spinner
         y += 50 + 12
 
         if item.type == "Audio" {
@@ -438,6 +466,139 @@ class ItemDetailVC: UIViewController {
     @objc private func playNextTapped() { AudioQueue.shared.playNext(item) }
     @objc private func addToQueueTapped() { AudioQueue.shared.addToEnd(item) }
 
+    // MARK: - Cast
+
+    @objc private func castTapped() {
+        // Already casting — go to the controls rather than restarting the session.
+        if CastController.shared.isCasting {
+            navigationController?.pushViewController(CastVC(), animated: true)
+            return
+        }
+        castSpinner?.startAnimating()
+        castBtn?.setImage(nil, for: .normal)
+        CastController.shared.discoverDevices { [weak self] devices in
+            guard let self = self else { return }
+            self.castSpinner?.stopAnimating()
+            self.castBtn?.setImage(UIImage(named: "cast"), for: .normal)
+            if devices.isEmpty {
+                self.showNoDevicesAlert()
+            } else {
+                self.presentCastDevicePicker(devices)
+            }
+        }
+    }
+
+    private func showNoDevicesAlert() {
+#if IOS6_TARGET
+        UIAlertView(title: "No Chromecast found",
+                    message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
+                    delegate: nil, cancelButtonTitle: "OK").show()
+#else
+        let alert = UIAlertController(title: "No Chromecast found",
+                                      message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+#endif
+    }
+
+    private func presentCastDevicePicker(_ devices: [CastDevice]) {
+#if IOS6_TARGET
+        pendingCastDevices = devices
+        let sheet = UIActionSheet(title: "Cast to\u{2026}", delegate: self,
+                                  cancelButtonTitle: nil, destructiveButtonTitle: nil)
+        sheet.tag = 5
+        for d in devices { sheet.addButton(withTitle: d.name) }
+        sheet.addButton(withTitle: "Cancel")
+        sheet.cancelButtonIndex = sheet.numberOfButtons - 1
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Cast to\u{2026}", message: nil, preferredStyle: .actionSheet)
+        for d in devices {
+            alert.addAction(UIAlertAction(title: d.name, style: .default) { [weak self] _ in
+                self?.deviceChosen(d)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
+    // Audio has no quality tiers (the cast stream is always mp3), so it starts
+    // immediately; video goes on to the quality sheet.
+    private func deviceChosen(_ device: CastDevice) {
+        pendingCastDevice = device
+        if item.type == "Audio" {
+            beginCast(quality: nil)
+        } else {
+            presentCastQualityPicker()
+        }
+    }
+
+    private func presentCastQualityPicker() {
+        let qualities = availableDownloadQualities
+#if IOS6_TARGET
+        pendingCastQualities = qualities
+        let sheet = UIActionSheet(title: "Cast Quality", delegate: self,
+                                  cancelButtonTitle: nil, destructiveButtonTitle: nil)
+        sheet.tag = 6
+        for q in qualities { sheet.addButton(withTitle: q.label) }
+        sheet.addButton(withTitle: "Cancel")
+        sheet.cancelButtonIndex = sheet.numberOfButtons - 1
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Cast Quality", message: nil, preferredStyle: .actionSheet)
+        for q in qualities {
+            alert.addAction(UIAlertAction(title: q.label, style: .default) { [weak self] _ in
+                self?.beginCast(quality: q)
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
+    private func beginCast(quality: DownloadQuality?) {
+        guard let device = pendingCastDevice else { return }
+        pendingCastDevice = nil
+
+        let isAudio = item.type == "Audio"
+        let kind: CastController.Kind = isAudio ? .audio : .video
+        // The Chromecast fetches this URL itself over the LAN, so it must be the
+        // real server URL — LocalStreamProxy binds to 127.0.0.1 and is unreachable
+        // from the device.
+        guard let url = isAudio ? castAudioURL() : streamURL(quality: quality ?? .original) else { return }
+
+        let start = CastController.shared.savedResumePosition(for: item, kind: kind)
+        CastController.shared.start(item: item, kind: kind, device: device,
+                                    url: url.absoluteString,
+                                    contentType: isAudio ? "audio/mpeg" : "video/mp4",
+                                    startTime: start)
+        navigationController?.pushViewController(CastVC(), animated: true)
+    }
+
+    // Forces an mp3 response rather than reusing AudioPlayer's wider Container list:
+    // the receiver is handed a fixed contentType up front, so the stream it actually
+    // gets back has to match it deterministically.
+    private func castAudioURL() -> URL? {
+        guard let serverURL = JellyfinServer.serverURL,
+              let token = JellyfinServer.accessToken,
+              let userId = JellyfinServer.userId else { return nil }
+        let params = [
+            "api_key=\(token)",
+            "UserId=\(userId)",
+            "DeviceId=jellyold-device-01",
+            "MaxStreamingBitrate=320000",
+            "Container=mp3",
+            "TranscodingContainer=mp3",
+            "TranscodingProtocol=http",
+            "AudioCodec=mp3"
+        ].joined(separator: "&")
+        return URL(string: "\(serverURL)/Audio/\(item.id)/universal?\(params)")
+    }
+
     // MARK: - Download
 
     private func updateDownloadButton() {
@@ -528,7 +689,9 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
-    private func downloadURL(quality: DownloadQuality) -> URL? {
+    // Shared by the download and the cast paths — both want a plain, self-contained
+    // mp4 the fetcher (the phone, or the Chromecast) can pull over HTTP.
+    private func streamURL(quality: DownloadQuality) -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
         let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -563,7 +726,7 @@ class ItemDetailVC: UIViewController {
     }
 
     private func beginDownload(quality: DownloadQuality) {
-        guard let url = downloadURL(quality: quality) else { return }
+        guard let url = streamURL(quality: quality) else { return }
         DownloadManager.startDownload(item, url: url.absoluteString)
         updateDownloadButton()
         startDownloadPoll()
@@ -613,6 +776,12 @@ extension ItemDetailVC: UIActionSheetDelegate {
             beginDownload(quality: pendingDownloadQualities[buttonIndex])
         case 4:
             deleteDownload()
+        case 5:
+            guard buttonIndex < pendingCastDevices.count else { return }
+            deviceChosen(pendingCastDevices[buttonIndex])
+        case 6:
+            guard buttonIndex < pendingCastQualities.count else { return }
+            beginCast(quality: pendingCastQualities[buttonIndex])
         default:
             break
         }
