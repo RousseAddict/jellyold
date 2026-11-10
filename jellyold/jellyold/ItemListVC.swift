@@ -25,7 +25,8 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     private let library: Library
     private var collectionView: UICollectionView!
     private var spinner: UIActivityIndicatorView!
-    private var emptyLabel: UILabel!
+    private var emptyView: EmptyStateView!
+    private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchItems() }
     private var items: [MediaItem] = []
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
 
@@ -68,11 +69,13 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         if currentSortIndex >= sortOptions.count { currentSortIndex = 0 }
         setupCollectionView()
         setupSpinner()
-        setupEmptyLabel()
+        setupEmptyViews()
         if isSortable {
-            navigationItem.rightBarButtonItem = UIBarButtonItem(
-                title: "Sort", style: .plain, target: self, action: #selector(sortTapped)
+            let sort = UIBarButtonItem(
+                image: UIImage(named: "sort"), style: .plain, target: self, action: #selector(sortTapped)
             )
+            sort.accessibilityLabel = "Sort"
+            navigationItem.rightBarButtonItem = sort
         }
         fetchItems()
     }
@@ -105,18 +108,25 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         view.addSubview(spinner)
     }
 
-    private func setupEmptyLabel() {
-        emptyLabel = UILabel()
-        emptyLabel.frame = CGRect(x: 20, y: 0, width: view.bounds.width - 40, height: 60)
-        emptyLabel.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-        emptyLabel.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin, .flexibleTopMargin, .flexibleBottomMargin]
-        emptyLabel.textColor = UIColor(white: 0.5, alpha: 1.0)
-        emptyLabel.textAlignment = .center
-        emptyLabel.font = UIFont.systemFont(ofSize: 16)
-        emptyLabel.text = "No items found"
-        emptyLabel.isHidden = true
-        emptyLabel.backgroundColor = .clear
-        view.addSubview(emptyLabel)
+    private func setupEmptyViews() {
+        switch library.collectionType {
+        case "playlistContent":
+            emptyView = EmptyStateView(mark: .playlist, title: "This playlist is empty",
+                                       body: "Anything added to it in Jellyfin will show up here.")
+        case "playlists":
+            emptyView = EmptyStateView(mark: .playlist, title: "No playlists",
+                                       body: "Playlists made in Jellyfin will show up here.")
+        case "folder":
+            emptyView = EmptyStateView(mark: .folder, title: "This folder is empty",
+                                       body: "Jellyfin hasn't found anything in it to play or show.")
+        default:
+            emptyView = EmptyStateView(mark: .folder, title: "Nothing here yet",
+                                       body: "If you just added files, give Jellyfin's library scan a minute.")
+        }
+        for v in [emptyView!, failedView] {
+            v.frame = CGRect(x: 0, y: 0, width: collectionView.bounds.width, height: collectionView.bounds.height)
+            collectionView.addSubview(v)
+        }
     }
 
     // MARK: - Sorting
@@ -159,7 +169,8 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
               let userId = JellyfinServer.userId else { return }
 
         spinner.startAnimating()
-        emptyLabel.isHidden = true
+        emptyView.isHidden = true
+        failedView.isHidden = true
 
         // Playlist content uses a different API endpoint
         if library.collectionType == "playlistContent" {
@@ -219,25 +230,23 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 
     private func handleItemsResponse(data: Data?, error: Error?) {
         spinner.stopAnimating()
-        if let error = error { showAlert(error.localizedDescription); return }
+        if let error = error { showFailed(error.localizedDescription); return }
         guard let data = data,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let its = json["Items"] as? [[String: Any]] else {
-            showAlert("Could not load items."); return
+            showFailed("The server's reply couldn't be read."); return
         }
         items = its.compactMap { MediaItem(json: $0) }
-        emptyLabel.isHidden = !items.isEmpty
+        emptyView.isHidden = !items.isEmpty
         collectionView.reloadData()
     }
 
-    private func showAlert(_ msg: String) {
-#if IOS6_TARGET
-        let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
-#else
-        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-#endif
+    // A failed re-sort clears the old page rather than leaving it under the error.
+    private func showFailed(_ message: String) {
+        items = []
+        collectionView.reloadData()
+        failedView.setText(title: "Couldn't load \(library.name)", body: message)
+        failedView.isHidden = false
     }
 
     // MARK: - DataSource

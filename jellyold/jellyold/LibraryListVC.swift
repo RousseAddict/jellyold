@@ -7,18 +7,27 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     private var libraries: [Library] = []
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
 
+    private lazy var emptyView = EmptyStateView(mark: .folder, title: "No libraries",
+                                                body: "This account can't see any libraries yet. A Jellyfin admin can share them with it.")
+    private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchLibraries() }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Libraries"
         view.backgroundColor = bgColor
         setupCollectionView()
         setupSpinner()
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Logout", style: .plain, target: self, action: #selector(logoutTapped)
+        // Phosphor sign-out and download-simple, white so iOS 6 draws them as-is.
+        let logout = UIBarButtonItem(
+            image: UIImage(named: "logout"), style: .plain, target: self, action: #selector(logoutTapped)
         )
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            title: "Downloads", style: .plain, target: self, action: #selector(downloadsTapped)
+        logout.accessibilityLabel = "Log out"
+        navigationItem.rightBarButtonItem = logout
+        let downloads = UIBarButtonItem(
+            image: UIImage(named: "downloads"), style: .plain, target: self, action: #selector(downloadsTapped)
         )
+        downloads.accessibilityLabel = "Downloads"
+        navigationItem.leftBarButtonItem = downloads
         fetchLibraries()
     }
 
@@ -37,6 +46,10 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
                                                   bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(collectionView)
+        for v in [emptyView, failedView] {
+            v.frame = CGRect(x: 0, y: 0, width: collectionView.bounds.width, height: collectionView.bounds.height)
+            collectionView.addSubview(v)
+        }
     }
 
     private func setupSpinner() {
@@ -50,20 +63,31 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     private func fetchLibraries() {
         guard let serverURL = JellyfinServer.serverURL,
               let userId = JellyfinServer.userId else { return }
+        emptyView.isHidden = true
+        failedView.isHidden = true
         spinner.startAnimating()
         let url = "\(serverURL)/Users/\(userId)/Views"
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             guard let self = self else { return }
             self.spinner.stopAnimating()
-            if let error = error { self.showAlert(error.localizedDescription); return }
+            if let error = error { self.showFailed(error.localizedDescription); return }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let items = json["Items"] as? [[String: Any]] else {
-                self.showAlert("Could not parse library list."); return
+                self.showFailed("The server's reply couldn't be read."); return
             }
             self.libraries = items.compactMap { Library(json: $0) }
+            self.emptyView.isHidden = !self.libraries.isEmpty
             self.collectionView.reloadData()
         }
+    }
+
+    // In place of an alert over an empty page: this is the first screen, and the
+    // fetch only ran from viewDidLoad, so a server that was down at launch used to
+    // leave nothing to do but relaunch.
+    private func showFailed(_ message: String) {
+        failedView.setText(title: "Couldn't load libraries", body: message)
+        failedView.isHidden = false
     }
 
     @objc private func logoutTapped() {
@@ -73,16 +97,6 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
 
     @objc private func downloadsTapped() {
         navigationController?.pushViewController(DownloadsVC(), animated: true)
-    }
-
-    private func showAlert(_ msg: String) {
-        #if IOS6_TARGET
-        let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
-#else
-        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-#endif
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { libraries.count }

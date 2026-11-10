@@ -29,9 +29,11 @@ class NowPlayingVC: UIViewController {
         super.viewDidLoad()
         title = "Now Playing"
         view.backgroundColor = bgColor
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Queue", style: .plain, target: self, action: #selector(queueTapped)
+        let queue = UIBarButtonItem(
+            image: UIImage(named: "queue"), style: .plain, target: self, action: #selector(queueTapped)
         )
+        queue.accessibilityLabel = "Queue"
+        navigationItem.rightBarButtonItem = queue
         setupSubviews()
     }
 

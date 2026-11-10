@@ -58,6 +58,7 @@
 		BB210026 /* x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210025 /* x.png */; };
 		BB210028 /* x@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB210027 /* x@2x.png */; };
 		BB220002 /* PhotoVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB220001 /* PhotoVC.swift */; };
+		BB240002 /* EmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB240001 /* EmptyStateView.swift */; };
 		BB230002 /* CastMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB230001 /* CastMessage.swift */; };
 		BB230004 /* CastDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB230003 /* CastDiscovery.swift */; };
 		BB230006 /* CastSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB230005 /* CastSession.swift */; };
@@ -65,6 +66,16 @@
 		BB230010 /* CastVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB230009 /* CastVC.swift */; };
 		BB230012 /* cast.png in Resources */ = {isa = PBXBuildFile; fileRef = BB230011 /* cast.png */; };
 		BB230014 /* cast@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB230013 /* cast@2x.png */; };
+		BB240012 /* downloads.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240011 /* downloads.png */; };
+		BB240014 /* downloads@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240013 /* downloads@2x.png */; };
+		BB240016 /* logout.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240015 /* logout.png */; };
+		BB240018 /* logout@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240017 /* logout@2x.png */; };
+		BB24001A /* sort.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240019 /* sort.png */; };
+		BB24001C /* sort@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB24001B /* sort@2x.png */; };
+		BB24001E /* queue.png in Resources */ = {isa = PBXBuildFile; fileRef = BB24001D /* queue.png */; };
+		BB240020 /* queue@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB24001F /* queue@2x.png */; };
+		BB240022 /* cast-bar.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240021 /* cast-bar.png */; };
+		BB240024 /* cast-bar@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240023 /* cast-bar@2x.png */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -139,6 +150,7 @@
 		BB210025 /* x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x.png"; sourceTree = "<group>"; };
 		BB210027 /* x@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "x@2x.png"; sourceTree = "<group>"; };
 		BB220001 /* PhotoVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoVC.swift; sourceTree = "<group>"; };
+		BB240001 /* EmptyStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStateView.swift; sourceTree = "<group>"; };
 		BB230001 /* CastMessage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CastMessage.swift; sourceTree = "<group>"; };
 		BB230003 /* CastDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CastDiscovery.swift; sourceTree = "<group>"; };
 		BB230005 /* CastSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CastSession.swift; sourceTree = "<group>"; };
@@ -146,6 +158,16 @@
 		BB230009 /* CastVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CastVC.swift; sourceTree = "<group>"; };
 		BB230011 /* cast.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast.png"; sourceTree = "<group>"; };
 		BB230013 /* cast@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast@2x.png"; sourceTree = "<group>"; };
+		BB240011 /* downloads.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "downloads.png"; sourceTree = "<group>"; };
+		BB240013 /* downloads@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "downloads@2x.png"; sourceTree = "<group>"; };
+		BB240015 /* logout.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "logout.png"; sourceTree = "<group>"; };
+		BB240017 /* logout@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "logout@2x.png"; sourceTree = "<group>"; };
+		BB240019 /* sort.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "sort.png"; sourceTree = "<group>"; };
+		BB24001B /* sort@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "sort@2x.png"; sourceTree = "<group>"; };
+		BB24001D /* queue.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "queue.png"; sourceTree = "<group>"; };
+		BB24001F /* queue@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "queue@2x.png"; sourceTree = "<group>"; };
+		BB240021 /* cast-bar.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast-bar.png"; sourceTree = "<group>"; };
+		BB240023 /* cast-bar@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast-bar@2x.png"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -223,6 +245,7 @@
 				BB230003 /* CastDiscovery.swift */,
 				BB230001 /* CastMessage.swift */,
 				BB220001 /* PhotoVC.swift */,
+				BB240001 /* EmptyStateView.swift */,
 				BB200009 /* MiniPlayerBar.swift */,
 				BB200007 /* QueueVC.swift */,
 				BB200005 /* NowPlayingVC.swift */,
@@ -236,6 +259,16 @@
 				BB150001 /* Logo@2x.png */,
 				BB230013 /* cast@2x.png */,
 				BB230011 /* cast.png */,
+				BB240011 /* downloads.png */,
+				BB240013 /* downloads@2x.png */,
+				BB240015 /* logout.png */,
+				BB240017 /* logout@2x.png */,
+				BB240019 /* sort.png */,
+				BB24001B /* sort@2x.png */,
+				BB24001D /* queue.png */,
+				BB24001F /* queue@2x.png */,
+				BB240021 /* cast-bar.png */,
+				BB240023 /* cast-bar@2x.png */,
 				BB210027 /* x@2x.png */,
 				BB210025 /* x.png */,
 				BB210023 /* skip-forward@2x.png */,
@@ -381,6 +414,16 @@
 				BB150002 /* Logo@2x.png in Resources */,
 				BB230014 /* cast@2x.png in Resources */,
 				BB230012 /* cast.png in Resources */,
+				BB240012 /* downloads.png in Resources */,
+				BB240014 /* downloads@2x.png in Resources */,
+				BB240016 /* logout.png in Resources */,
+				BB240018 /* logout@2x.png in Resources */,
+				BB24001A /* sort.png in Resources */,
+				BB24001C /* sort@2x.png in Resources */,
+				BB24001E /* queue.png in Resources */,
+				BB240020 /* queue@2x.png in Resources */,
+				BB240022 /* cast-bar.png in Resources */,
+				BB240024 /* cast-bar@2x.png in Resources */,
 				BB210028 /* x@2x.png in Resources */,
 				BB210026 /* x.png in Resources */,
 				BB210024 /* skip-forward@2x.png in Resources */,
@@ -444,6 +487,7 @@
 				BB230004 /* CastDiscovery.swift in Sources */,
 				BB230002 /* CastMessage.swift in Sources */,
 				BB220002 /* PhotoVC.swift in Sources */,
+				BB240002 /* EmptyStateView.swift in Sources */,
 				BB200010 /* MiniPlayerBar.swift in Sources */,
 				BB200008 /* QueueVC.swift in Sources */,
 				BB200006 /* NowPlayingVC.swift in Sources */,

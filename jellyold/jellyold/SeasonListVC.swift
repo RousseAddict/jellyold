@@ -8,6 +8,10 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
     private var spinner: UIActivityIndicatorView!
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
 
+    private lazy var emptyView = EmptyStateView(mark: .folder, title: "No seasons",
+                                                body: "Jellyfin hasn't found any episodes of this show yet.")
+    private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchSeasons() }
+
     // Two-flag approach: the skip can only fire once BOTH data is ready AND view has appeared
     private var pendingSingleSeason: MediaItem?
     private var viewHasAppeared = false
@@ -55,6 +59,10 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
         collectionView.delegate = self
         collectionView.register(PosterCell.self, forCellWithReuseIdentifier: "PosterCell")
         view.addSubview(collectionView)
+        for v in [emptyView, failedView] {
+            v.frame = CGRect(x: 0, y: 0, width: collectionView.bounds.width, height: collectionView.bounds.height)
+            collectionView.addSubview(v)
+        }
     }
 
     private func setupSpinner() {
@@ -68,35 +76,33 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
     private func fetchSeasons() {
         guard let serverURL = JellyfinServer.serverURL,
               let userId = JellyfinServer.userId else { return }
+        emptyView.isHidden = true
+        failedView.isHidden = true
         spinner.startAnimating()
         let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(series.id)&Fields=Overview,IndexNumber"
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             guard let self = self else { return }
             self.spinner.stopAnimating()
-            if let error = error { self.showAlert(error.localizedDescription); return }
+            if let error = error { self.showFailed(error.localizedDescription); return }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let items = json["Items"] as? [[String: Any]] else {
-                self.showAlert("Could not parse seasons."); return
+                self.showFailed("The server's reply couldn't be read."); return
             }
             self.seasons = items.compactMap { MediaItem(json: $0) }
             if self.seasons.count == 1 {
                 self.pendingSingleSeason = self.seasons[0]
                 self.trySkipIfSingleSeason()  // fires if viewDidAppear already ran
             } else {
+                self.emptyView.isHidden = !self.seasons.isEmpty
                 self.collectionView.reloadData()
             }
         }
     }
 
-    private func showAlert(_ msg: String) {
-        #if IOS6_TARGET
-        let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
-#else
-        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-#endif
+    private func showFailed(_ message: String) {
+        failedView.setText(title: "Couldn't load seasons", body: message)
+        failedView.isHidden = false
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { seasons.count }

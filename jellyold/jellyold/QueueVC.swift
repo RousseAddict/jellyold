@@ -20,8 +20,12 @@ class QueueVC: UIViewController, UITableViewDataSource, UITableViewDelegate {
         tv.separatorColor = UIColor(white: 0.2, alpha: 1)
         tv.dataSource = self
         tv.delegate = self
+        tv.tableFooterView = UIView()   // no empty separator rows under a short or empty list
         return tv
     }()
+
+    private lazy var emptyView = EmptyStateView(mark: .playlist, title: "Queue is empty",
+                                                body: "Long-press any song to play it next or add it to the queue.")
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -34,6 +38,8 @@ class QueueVC: UIViewController, UITableViewDataSource, UITableViewDelegate {
         tableView.contentInset = UIEdgeInsets(top: 0, left: 0,
                                              bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(tableView)
+        emptyView.frame = tableView.bounds
+        tableView.addSubview(emptyView)
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -64,7 +70,16 @@ class QueueVC: UIViewController, UITableViewDataSource, UITableViewDelegate {
     private func reload() {
         lastCount = AudioQueue.shared.items.count
         lastIndex = AudioQueue.shared.index
+        updateEmpty()
         tableView.reloadData()
+    }
+
+    // The empty screen, and Edit only while there is something to edit.
+    private func updateEmpty() {
+        let empty = AudioQueue.shared.items.isEmpty
+        emptyView.isHidden = !empty
+        if empty && isEditing { setEditing(false, animated: true) }
+        editButtonItem.isEnabled = !empty
     }
 
     override func setEditing(_ editing: Bool, animated: Bool) {

@@ -75,6 +75,10 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     private var spinner: UIActivityIndicatorView!
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
 
+    private lazy var emptyView = EmptyStateView(mark: .folder, title: "No episodes",
+                                                body: "Jellyfin hasn't found any episodes here yet.")
+    private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchEpisodes() }
+
     // All episodes for a series (flat, sorted by season then episode)
     init(series: MediaItem) {
         self.series = series
@@ -114,6 +118,10 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
                                                   bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(collectionView)
+        for v in [emptyView, failedView] {
+            v.frame = CGRect(x: 0, y: 0, width: collectionView.bounds.width, height: collectionView.bounds.height)
+            collectionView.addSubview(v)
+        }
     }
 
     private func setupSpinner() {
@@ -127,6 +135,8 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     private func fetchEpisodes() {
         guard let serverURL = JellyfinServer.serverURL,
               let userId = JellyfinServer.userId else { return }
+        emptyView.isHidden = true
+        failedView.isHidden = true
         spinner.startAnimating()
         let url: String
         if let season = season {
@@ -140,25 +150,21 @@ class EpisodeListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             guard let self = self else { return }
             self.spinner.stopAnimating()
-            if let error = error { self.showAlert(error.localizedDescription); return }
+            if let error = error { self.showFailed(error.localizedDescription); return }
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let its = json["Items"] as? [[String: Any]] else {
-                self.showAlert("Could not load episodes."); return
+                self.showFailed("The server's reply couldn't be read."); return
             }
             self.episodes = its.compactMap { MediaItem(json: $0) }
+            self.emptyView.isHidden = !self.episodes.isEmpty
             self.collectionView.reloadData()
         }
     }
 
-    private func showAlert(_ msg: String) {
-#if IOS6_TARGET
-        let a = UIAlertView(); a.title = "JellyOld"; a.message = msg; a.addButton(withTitle: "OK"); a.show()
-#else
-        let alert = UIAlertController(title: "JellyOld", message: msg, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-#endif
+    private func showFailed(_ message: String) {
+        failedView.setText(title: "Couldn't load episodes", body: message)
+        failedView.isHidden = false
     }
 
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { episodes.count }

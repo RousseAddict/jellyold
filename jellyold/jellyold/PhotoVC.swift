@@ -67,9 +67,11 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
         prev.direction = .right
         view.addGestureRecognizer(prev)
 
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
-            title: "Cast", style: .plain, target: self, action: #selector(castTapped)
+        let cast = UIBarButtonItem(
+            image: UIImage(named: "cast-bar"), style: .plain, target: self, action: #selector(castTapped)
         )
+        cast.accessibilityLabel = "Cast"
+        navigationItem.rightBarButtonItem = cast
 
         loadCurrent()
     }
