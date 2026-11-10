@@ -11,6 +11,10 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
                                                 body: "This account can't see any libraries yet. A Jellyfin admin can share them with it.")
     private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchLibraries() }
 
+#if IOS6_TARGET
+    private var activeActionSheet: UIActionSheet?
+#endif
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Libraries"
@@ -90,7 +94,26 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         failedView.isHidden = false
     }
 
+    // Asks first: the icon is easier to hit by accident than the old "Logout" text, and
+    // logging out forgets the server address too, not just the session.
     @objc private func logoutTapped() {
+        let message = "You'll need the server address and your password to sign back in."
+#if IOS6_TARGET
+        let sheet = UIActionSheet(title: "Log out? " + message, delegate: self,
+                                  cancelButtonTitle: "Cancel", destructiveButtonTitle: "Log Out")
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Log Out", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Log Out", style: .destructive) { [weak self] _ in
+            self?.logout()
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
+    private func logout() {
         JellyfinServer.clear()
         navigationController?.setViewControllers([ServerSetupVC()], animated: true)
     }
@@ -117,3 +140,15 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         navigationController?.pushViewController(ItemListVC(library: libraries[indexPath.item]), animated: true)
     }
 }
+
+// MARK: - UIActionSheetDelegate (iOS 6/7 only)
+
+#if IOS6_TARGET
+extension LibraryListVC: UIActionSheetDelegate {
+    func actionSheet(_ actionSheet: UIActionSheet, clickedButtonAt buttonIndex: Int) {
+        defer { activeActionSheet = nil }
+        guard buttonIndex == actionSheet.destructiveButtonIndex else { return }
+        logout()
+    }
+}
+#endif
