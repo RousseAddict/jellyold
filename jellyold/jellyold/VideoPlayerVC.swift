@@ -23,6 +23,23 @@ class VideoPlayerVC: UIViewController {
     private weak var observedItem: AVPlayerItem?
 #endif
 
+    private let playSessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    private var initialPosition = 0.0
+    private var positionTicks: Int64 = 0
+    private var reportTimer: Timer?
+    private var playbackReady = false
+    private var didBeginPlayback = false
+    private var appeared = false
+    private var closing = false
+    private var completed = false
+    private weak var playbackNavigation: UINavigationController?
+    private var reportedStart = false
+    private var reportedStop = false
+    private var lastReportTime = Date.distantPast
+    private var lastSampleTime = Date()
+    private var lastSamplePosition = 0.0
+    private var lastPaused = false
+
     private var isAudio: Bool { item.type == "Audio" }
 
     init(item: MediaItem,
@@ -48,12 +65,15 @@ class VideoPlayerVC: UIViewController {
         AudioPlayer.shared.pause()
         activateAudioSession()
         if isAudio { setupArtwork() }
-        setupPlayer()
-        setupBufferSpinner()
+        // Fetch again at Play time: another device may have advanced since
+        // the shelf/detail was loaded. A server zero overrides stale local resume.
+        loadServerPosition()
     }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        guard !closing else { return }
+        playbackNavigation = navigationController
         if !isAudio {
             navigationController?.setNavigationBarHidden(true, animated: animated)
             UIApplication.shared.setStatusBarHidden(true, with: .none)
@@ -62,6 +82,8 @@ class VideoPlayerVC: UIViewController {
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
+        guard !closing else { return }
+        appeared = true
         if isAudio {
             let navBottom = navigationController?.navigationBar.frame.maxY ?? 64
 #if IOS6_TARGET
@@ -72,21 +94,18 @@ class VideoPlayerVC: UIViewController {
                                           height: view.bounds.height - navBottom)
 #endif
         }
-#if IOS6_TARGET
-        player?.play()
-#else
-        avPlayer?.play()
-#endif
-        restorePosition()
+        if playbackReady { beginPlayback() }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard !isAudio else { return }
+        // UIKit can lay out the outgoing video during the pop transition.
+        // It must not hide the status bar again after viewWillDisappear restored it.
+        guard !isAudio, !closing else { return }
         UIApplication.shared.setStatusBarHidden(true, with: .none)
 #if IOS6_TARGET
         player?.view.frame = view.bounds
-        bufferSpinner.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        bufferSpinner?.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
 #else
         playerVC?.view.frame = view.bounds
 #endif
@@ -95,10 +114,15 @@ class VideoPlayerVC: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         if !isAudio {
+            UIApplication.shared.setStatusBarHidden(false, with: .none)
             navigationController?.setNavigationBarHidden(false, animated: animated)
-            UIApplication.shared.setStatusBarHidden(false, with: .fade)
         }
+        closing = true
+        sampleProgress(force: false)
+        stopReporting(ended: false, failed: false)
         savePosition()
+        reportTimer?.invalidate()
+        reportTimer = nil
         NotificationCenter.default.removeObserver(self)
 #if IOS6_TARGET
         player?.stop()
@@ -115,6 +139,18 @@ class VideoPlayerVC: UIViewController {
         if !AudioPlayer.shared.isPlaying {
             try? AVAudioSession.sharedInstance().setActive(false)
         }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Finish restoration after UIKit's outgoing full-screen transition.
+        // A late appearance/layout callback must not leave the browser full-screen.
+        guard closing, !isAudio, let nav = playbackNavigation,
+              !(nav.topViewController is VideoPlayerVC) else { return }
+        UIApplication.shared.setStatusBarHidden(false, with: .none)
+        nav.setNavigationBarHidden(false, animated: false)
+        nav.view.setNeedsLayout()
+        nav.view.layoutIfNeeded()
     }
 
     // MARK: - Common setup
@@ -181,7 +217,7 @@ class VideoPlayerVC: UIViewController {
             let params = [
                 "api_key=\(token)",
                 "UserId=\(userId)",
-                "DeviceId=jellyold-device-01",
+                "DeviceId=\(JellyfinServer.deviceId)",
                 "MaxStreamingBitrate=320000",
                 "Container=mp3,aac,m4a%7Caac,m4b%7Caac",
                 "TranscodingContainer=mp3",
@@ -193,16 +229,15 @@ class VideoPlayerVC: UIViewController {
             var params = [
                 "api_key=\(token)",
                 "MediaSourceId=\(item.id)",
-                "DeviceId=jellyold-device-01",
+                "DeviceId=\(JellyfinServer.deviceId)",
                 "MaxStreamingBitrate=8000000",
                 "VideoCodec=h264",
-                "AudioCodec=aac"
+                "AudioCodec=aac",
+                "PlaySessionId=\(playSessionId)"
             ]
             if forceTranscode {
                 // A unique PlaySessionId prevents Jellyfin reusing a cached direct-stream
                 // session for the same DeviceId, which would silently ignore the params.
-                let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-                params.append("PlaySessionId=\(sessionId)")
                 params.append("EnableDirectStream=false")
                 params.append("EnableDirectPlay=false")
                 if let audioIdx = selectedAudioIndex {
@@ -231,6 +266,7 @@ class VideoPlayerVC: UIViewController {
         player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         player.controlStyle = isAudio ? .embedded : .fullscreen
         player.shouldAutoplay = false
+        player.initialPlaybackTime = initialPosition
         if isAudio { player.view.backgroundColor = .clear }
         view.addSubview(player.view)
         player.prepareToPlay()
@@ -248,7 +284,7 @@ class VideoPlayerVC: UIViewController {
 
     private func setupBufferSpinner() {
         bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
-        bufferSpinner.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        bufferSpinner?.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
         bufferSpinner.autoresizingMask = [.flexibleLeftMargin, .flexibleRightMargin,
                                           .flexibleTopMargin, .flexibleBottomMargin]
         bufferSpinner.hidesWhenStopped = true
@@ -280,25 +316,12 @@ class VideoPlayerVC: UIViewController {
         let raw = player.playbackState.rawValue
         let name = (raw >= 0 && raw < names.count) ? names[raw] : "unknown(\(raw))"
         DebugLog.shared.log("Player", "playbackState=\(name) time=\(String(format: "%.1f", player.currentPlaybackTime))s")
+        if !closing { sampleProgress(force: true) }
     }
 
     @objc private func durationAvailable() {
         guard let player = player else { return }
         DebugLog.shared.log("Player", "duration=\(String(format: "%.1f", player.duration))s naturalSize=\(Int(player.naturalSize.width))x\(Int(player.naturalSize.height))")
-    }
-
-    private func savePosition() {
-        guard let player = player else { return }
-        let t = player.currentPlaybackTime
-        if t > 10 { UserDefaults.standard.set(t, forKey: resumeKey) }
-    }
-
-    private func restorePosition() {
-        let saved = UserDefaults.standard.double(forKey: resumeKey)
-        guard saved > 10 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.player?.currentPlaybackTime = saved
-        }
     }
 
     // MARK: - iOS 8/9 player
@@ -336,6 +359,7 @@ class VideoPlayerVC: UIViewController {
     @objc private func itemFailedToPlay(_ notification: Notification) {
         let err = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
         DebugLog.shared.log("Player", "AVPlayerItem FAILED to play to end: \(describe(err))")
+        finishPlayback(ended: false, failed: true)
     }
 
     @objc private func itemStalled() {
@@ -348,11 +372,20 @@ class VideoPlayerVC: UIViewController {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
             return
         }
+        DispatchQueue.main.async { [weak self, weak item] in
+            guard let self = self, let item = item, !self.closing else { return }
+            self.handlePlayerStatus(item)
+        }
+    }
+
+    private func handlePlayerStatus(_ item: AVPlayerItem) {
         switch item.status {
         case .readyToPlay:
             DebugLog.shared.log("Player", "AVPlayerItem status=readyToPlay duration=\(String(format: "%.1f", item.duration.seconds))s")
+            if appeared && playbackReady { beginPlayback() }
         case .failed:
             DebugLog.shared.log("Player", "AVPlayerItem status=FAILED \(describe(item.error as NSError?))")
+            finishPlayback(ended: false, failed: true)
         case .unknown:
             DebugLog.shared.log("Player", "AVPlayerItem status=unknown")
         @unknown default:
@@ -374,41 +407,164 @@ class VideoPlayerVC: UIViewController {
         bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
     }
 
-    private func savePosition() {
-        guard let avPlayer = avPlayer else { return }
-        let t = avPlayer.currentTime().seconds
-        if t > 10 { UserDefaults.standard.set(t, forKey: resumeKey) }
-    }
 
-    private func restorePosition() {
-        let saved = UserDefaults.standard.double(forKey: resumeKey)
-        guard saved > 10 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let player = self?.avPlayer else { return }
-            player.seek(to: CMTime(seconds: saved, preferredTimescale: 1000))
-        }
-    }
 #endif
 
     // MARK: - Shared
+
+    private func savePosition() {
+        if completed { UserDefaults.standard.removeObject(forKey: resumeKey) }
+        else { UserDefaults.standard.set(PlaybackPosition.seconds(ticks: positionTicks), forKey: resumeKey) }
+    }
 
     private var resumeKey: String { "resume_\(item.id)" }
 
     @objc private func playbackFinished(_ notification: Notification) {
 #if IOS6_TARGET
-        // "playbackError" here is the single most telling line when a stream
-        // plays on one device but not another — MPMoviePlayerController
-        // reports a failed decode/load as a *finish*, not as an error.
-        let reasons = ["playbackEnded", "userExited", "playbackError"]
-        let raw = (notification.userInfo?[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] as? NSNumber)?.intValue ?? -1
-        let reason = (raw >= 0 && raw < reasons.count) ? reasons[raw] : "unknown(\(raw))"
-        let err = notification.userInfo?["error"] as? NSError
-        DebugLog.shared.log("Player", "playbackFinished reason=\(reason)"
-            + (err == nil ? "" : " error=[domain=\(err!.domain) code=\(err!.code) \(err!.localizedDescription)]"))
+        let reason = (notification.userInfo?[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] as? NSNumber)?.intValue ?? -1
+        let ended = reason == MPMovieFinishReason.playbackEnded.rawValue
+        let failed = reason == MPMovieFinishReason.playbackError.rawValue
 #else
-        DebugLog.shared.log("Player", "playbackFinished (played to end)")
+        let ended = true
+        let failed = false
 #endif
-        UserDefaults.standard.removeObject(forKey: resumeKey)
+        finishPlayback(ended: ended, failed: failed)
+    }
+
+    private func finishPlayback(ended: Bool, failed: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.finishPlayback(ended: ended, failed: failed) }
+            return
+        }
+        guard !closing else { return }
+        closing = true
+        completed = ended && !failed
+        stopReporting(ended: ended, failed: failed)
+        if ended && !failed { UserDefaults.standard.removeObject(forKey: resumeKey) }
+        else { savePosition() }
         navigationController?.popViewController(animated: true)
+    }
+
+    private func loadServerPosition() {
+        guard let server = JellyfinServer.serverURL, let user = JellyfinServer.userId else { return }
+        HTTPClient.get(url: "\(server)/Users/\(user)/Items/\(item.id)",
+                       headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, _ in
+            guard let self = self, !self.closing else { return }
+            var serverTicks = self.item.playbackPositionTicks
+            if let data = data, let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let userData = json["UserData"] as? [String: Any],
+               let ticks = userData["PlaybackPositionTicks"] as? NSNumber { serverTicks = ticks.int64Value }
+            self.initialPosition = PlaybackPosition.resume(serverTicks: serverTicks,
+                localSeconds: UserDefaults.standard.double(forKey: self.resumeKey), duration: self.item.durationSeconds ?? 0)
+            self.positionTicks = PlaybackPosition.ticks(seconds: self.initialPosition) ?? 0
+            self.lastSamplePosition = self.initialPosition
+            self.setupBufferSpinner()
+            self.setupPlayer()
+            guard !self.closing else { return }
+            self.playbackReady = true
+            NotificationCenter.default.addObserver(self, selector: #selector(self.backgrounded),
+                name: UIApplication.didEnterBackgroundNotification, object: nil)
+            self.reportTimer = Timer.scheduledTimer(timeInterval: 1, target: self,
+                selector: #selector(self.pollProgress), userInfo: nil, repeats: true)
+            if self.appeared { self.beginPlayback() }
+        }
+    }
+
+    private func beginPlayback() {
+        guard !closing, !didBeginPlayback else { return }
+#if IOS6_TARGET
+        guard let player = player else { return }
+        didBeginPlayback = true
+        player.play()
+#else
+        guard let player = avPlayer, player.currentItem?.status == .readyToPlay else { return }
+        didBeginPlayback = true
+        if initialPosition > 0 {
+            player.seek(to: CMTime(seconds: initialPosition, preferredTimescale: 1000)) { [weak self, weak player] _ in
+                DispatchQueue.main.async {
+                    guard let self = self, !self.closing else { return }
+                    player?.play()
+                }
+            }
+        } else { player.play() }
+#endif
+    }
+    @objc private func pollProgress() { sampleProgress(force: false) }
+    @objc private func backgrounded() {
+#if IOS6_TARGET
+        player?.pause()
+#else
+        avPlayer?.pause()
+#endif
+        sampleProgress(force: true)
+        savePosition()
+    }
+    private func sampleProgress(force: Bool) {
+        guard playbackReady, !reportedStop else { return }
+#if IOS6_TARGET
+        guard let player = player else { return }
+        let state = player.playbackState
+        guard state == .playing || state == .paused || state == .seekingForward || state == .seekingBackward else { return }
+        let time = player.currentPlaybackTime
+        let paused = state != .playing
+        guard player.loadState.contains(.playable) else { return }
+#else
+        guard let player = avPlayer, player.currentItem?.status == .readyToPlay else { return }
+        let time = CMTimeGetSeconds(player.currentTime())
+        let paused = player.rate == 0
+#endif
+        guard let ticks = PlaybackPosition.ticks(seconds: time, duration: item.durationSeconds ?? 0) else { return }
+        // Before initial resume has landed, the player may announce time zero.
+        if !reportedStart && initialPosition > 0 && time < initialPosition - 2 { return }
+        let now = Date()
+        let elapsed = now.timeIntervalSince(lastSampleTime)
+        let seeked = abs(time - lastSamplePosition) > max(3, elapsed + 2)
+        positionTicks = ticks
+        lastSamplePosition = time
+        lastSampleTime = now
+        if !reportedStart {
+            guard !paused else { return }
+            reportedStart = true
+            report("Playing", paused: false)
+        } else if !closing && (force || seeked || paused != lastPaused || now.timeIntervalSince(lastReportTime) >= 10) {
+            report("Playing/Progress", paused: paused)
+        }
+        lastPaused = paused
+        savePosition()
+    }
+    private func stopReporting(ended: Bool, failed: Bool) {
+        guard !reportedStop else { return }
+        reportedStop = true
+        reportTimer?.invalidate()
+        reportTimer = nil
+        // A decode/load failure before the first frame is not a watched item.
+        guard reportedStart else { return }
+        positionTicks = PlaybackPosition.stopped(last: positionTicks, duration: item.durationSeconds ?? 0,
+                                                  ended: ended, failed: failed)
+        report("Playing/Stopped", paused: true, failed: failed)
+    }
+    private func report(_ endpoint: String, paused: Bool, failed: Bool = false) {
+        guard let server = JellyfinServer.serverURL else { return }
+        var body: [String: Any] = ["ItemId": item.id, "MediaSourceId": item.id,
+            "PlaySessionId": playSessionId, "PositionTicks": NSNumber(value: positionTicks)]
+        if endpoint == "Playing/Stopped" {
+            body["Failed"] = failed
+        } else {
+            body["CanSeek"] = true
+            body["IsPaused"] = paused
+            body["IsMuted"] = false
+            body["PlayMethod"] = DownloadManager.isDownloaded(item.id) ? "DirectPlay" : "Transcode"
+            if let index = selectedAudioIndex { body["AudioStreamIndex"] = index }
+            if let index = selectedSubtitleIndex { body["SubtitleStreamIndex"] = index }
+        }
+        lastReportTime = Date()
+        // CurlFetcher's serial API queue preserves Start → Progress → Stopped
+        // order, including when Back immediately opens the home shelves.
+        let ticks = positionTicks
+        let itemId = item.id
+        HTTPClient.post(url: server + "/Sessions/" + endpoint,
+                        headers: ["Authorization": JellyfinServer.authHeader()], body: body) { _, error in
+            DebugLog.shared.log("Sync", "\(endpoint) \(error == nil ? "OK" : "FAILED") item=\(itemId) ticks=\(ticks) paused=\(paused) failed=\(failed)")
+        }
     }
 }

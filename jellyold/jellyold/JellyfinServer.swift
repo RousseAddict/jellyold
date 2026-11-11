@@ -51,8 +51,34 @@ struct JellyfinServer {
         defaults.removeObject(forKey: "userId")
     }
 
+    // One stable identifier per installation, shared by login, streams and
+    // progress reports. A single hard-coded ID merges different clients' sessions.
+    private static let installationDeviceId = loadDeviceId(from: defaults)
+
+    static func loadDeviceId(from store: UserDefaults) -> String {
+        if let saved = store.string(forKey: "jellyoldDeviceId"), !saved.isEmpty { return saved }
+        let value = "jellyold-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        store.set(value, forKey: "jellyoldDeviceId")
+        return value
+    }
+
+    static var deviceId: String { installationDeviceId }
+
+    static func clientHeader() -> String {
+        "MediaBrowser Client=\"JellyOld\", Device=\"iOS\", DeviceId=\"\(deviceId)\", Version=\"1.0\""
+    }
+
     static func authHeader() -> String {
-        let token = accessToken ?? ""
-        return "MediaBrowser Token=\"\(token)\", Client=\"JellyOld\", Device=\"iPhone\", DeviceId=\"jellyold-device-01\", Version=\"1.0\""
+        clientHeader() + ", Token=\"\(accessToken ?? "")\""
+    }
+
+    // HLS playlists may contain absolute CDN URLs. Never forward the account
+    // token to a different origin; normalize default ports and host case.
+    static func sameOrigin(_ url: URL, _ server: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              scheme == server.scheme?.lowercased(),
+              let host = url.host?.lowercased(), host == server.host?.lowercased() else { return false }
+        let defaultPort = scheme == "https" ? 443 : 80
+        return (url.port ?? defaultPort) == (server.port ?? defaultPort)
     }
 }

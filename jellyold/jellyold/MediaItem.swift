@@ -4,6 +4,8 @@ struct MediaItem {
     let id: String
     let name: String
     let type: String
+    let playbackPositionTicks: Int64?
+    let seriesName: String?
     let year: Int?
     let overview: String?
     let indexNumber: Int?
@@ -18,6 +20,9 @@ struct MediaItem {
         self.id = id
         self.name = name
         self.type = json["Type"] as? String ?? ""
+        let userData = json["UserData"] as? [String: Any]
+        self.playbackPositionTicks = (userData?["PlaybackPositionTicks"] as? NSNumber)?.int64Value
+        self.seriesName = json["SeriesName"] as? String
         self.year = json["ProductionYear"] as? Int
         self.overview = json["Overview"] as? String
         self.indexNumber = json["IndexNumber"] as? Int

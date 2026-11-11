@@ -18,6 +18,7 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     override func viewDidLoad() {
         super.viewDidLoad()
         title = "Libraries"
+        navigationItem.leftItemsSupplementBackButton = true
         view.backgroundColor = bgColor
         setupCollectionView()
         setupSpinner()

@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F01100000000000000000012 /* PlaybackPosition.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01100000000000000000011; };
+		F01100000000000000000002 /* HomeVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = F01100000000000000000001; };
 		A34362D62FD764210064ADE1 /* ViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34362D52FD764210064ADE1 /* ViewController.swift */; };
 		A34362D82FD764250064ADE1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A34362D72FD764250064ADE1 /* Assets.xcassets */; };
 		A34363012FD764270064ADE1 /* Default-568h@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = A34363002FD764270064ADE1 /* Default-568h@2x.png */; };
@@ -96,6 +98,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		F01100000000000000000011 /* PlaybackPosition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackPosition.swift; sourceTree = "<group>"; };
+		F01100000000000000000001 /* HomeVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeVC.swift; sourceTree = "<group>"; };
 		A34362D22FD764210064ADE1 /* jellyold.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = jellyold.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A34362D52FD764210064ADE1 /* ViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewController.swift; sourceTree = "<group>"; };
 		A34362FE2FD764260064ADE1 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -220,6 +224,8 @@
 			isa = PBXGroup;
 			children = (
 				A34362D52FD764210064ADE1 /* ViewController.swift */,
+				F01100000000000000000001 /* HomeVC.swift */,
+				F01100000000000000000011 /* PlaybackPosition.swift */,
 				A34362FE2FD764260064ADE1 /* AppDelegate.swift */,
 				A343631A2FD764290064ADE1 /* HTTPClient.swift */,
 				A343631C2FD764290064ADE1 /* JellyfinAPI.swift */,
@@ -497,6 +503,8 @@
 				BB190002 /* DebugLog.swift in Sources */,
 				BB170004 /* DownloadsVC.swift in Sources */,
 				BB170002 /* DownloadManager.swift in Sources */,
+				F01100000000000000000002 /* HomeVC.swift in Sources */,
+				F01100000000000000000012 /* PlaybackPosition.swift in Sources */,
 				A34362FF2FD764260064ADE1 /* AppDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

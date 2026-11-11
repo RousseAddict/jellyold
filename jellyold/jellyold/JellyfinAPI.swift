@@ -8,7 +8,7 @@ class JellyfinAPI {
         let url = "\(serverURL)/Users/AuthenticateByName"
         let body: [String: Any] = ["Username": username, "Pw": password]
         let headers = [
-            "Authorization": "MediaBrowser Client=\"JellyOld\", Device=\"iPhone\", DeviceId=\"jellyold-device-01\", Version=\"1.0\""
+            "Authorization": JellyfinServer.clientHeader()
         ]
         HTTPClient.post(url: url, headers: headers, body: body) { data, error in
             if let error = error {

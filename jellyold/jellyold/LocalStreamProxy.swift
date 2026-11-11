@@ -265,7 +265,7 @@ final class LocalStreamProxy: NSObject {
 
     private func servePlaylist(remote: URL, gen: UInt64, path: String, clientFd: Int32) {
         let t0 = CFAbsoluteTimeGetCurrent()
-        guard let data = CurlFetcher.fetchSyncData(url: remote.absoluteString) else {
+        guard let data = CurlFetcher.fetchSyncData(url: remote.absoluteString, headers: authorizationHeaders(for: remote)) else {
             // fetchSyncData returns nil for a transport error OR a non-2xx
             // status — a TLS handshake failure lands here.
             DebugLog.shared.log("Proxy", "PLAYLIST \(path) FETCH FAILED after \(ms(since: t0))ms (transport error or non-2xx) \(DebugLog.redact(remote.absoluteString))")
@@ -326,6 +326,12 @@ final class LocalStreamProxy: NSObject {
 
     // MARK: - Segments / direct streams (true streaming — relayed as they arrive)
 
+    private func authorizationHeaders(for url: URL) -> [String: String] {
+        guard let server = JellyfinServer.serverURL, let base = URL(string: server),
+              JellyfinServer.sameOrigin(url, base) else { return [:] }
+        return ["Authorization": JellyfinServer.authHeader()]
+    }
+
     private func streamRemote(_ remote: URL, gen: UInt64, path: String, rangeHeader: String?, clientFd: Int32) {
         let t0 = CFAbsoluteTimeGetCurrent()
         let conn = ProxyConn(clientFd: clientFd, gen: gen, proxy: self)
@@ -340,6 +346,9 @@ final class LocalStreamProxy: NSObject {
         curl_bridge_set_timeout(h, 0) // segments/direct streams can run far longer than a normal API call
 
         var headerList: UnsafeMutableRawPointer?
+        for (key, value) in authorizationHeaders(for: remote) {
+            "\(key): \(value)".withCString { headerList = curl_bridge_headers_append(headerList, $0) }
+        }
         if let r = rangeHeader {
             r.withCString { headerList = curl_bridge_headers_append(headerList, $0) }
         }
