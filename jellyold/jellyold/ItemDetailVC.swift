@@ -624,7 +624,7 @@ class ItemDetailVC: UIViewController {
         var params = [
             "api_key=\(token)",
             "MediaSourceId=\(itemId)",
-            "DeviceId=jellyold-device-01",
+            "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())",
             "VideoCodec=h264",
             "AudioCodec=aac",
@@ -661,7 +661,7 @@ class ItemDetailVC: UIViewController {
               let token = JellyfinServer.accessToken else { return nil }
         var params = [
             "api_key=\(token)",
-            "DeviceId=jellyold-device-01",
+            "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())"
         ]
         if direct {
@@ -786,7 +786,7 @@ class ItemDetailVC: UIViewController {
         var params = [
             "api_key=\(token)",
             "MediaSourceId=\(itemId)",
-            "DeviceId=jellyold-device-01",
+            "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())",
             "VideoCodec=h264",
             "AudioCodec=aac",

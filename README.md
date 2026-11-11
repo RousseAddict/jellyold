@@ -40,6 +40,13 @@
 
 ---
 
+## Experimental source branch
+
+This branch adds native Continue Watching / Next Up and server video progress sync.
+It is fully AI/vibe-coded and intended as an experimental basis for further work,
+not a stable release. Existing prebuilt IPAs do not include these changes.
+See [scope, validation and known limits](docs/experimental-home-playback.md).
+
 ## Features
 
 **Libraries**

@@ -9,3 +9,7 @@
 *.sw?
 .env
 
+# Host-only test/build staging
+.build/
+.swiftpm/
+.local-checks/

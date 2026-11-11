@@ -149,7 +149,7 @@ class ServerSetupVC: UIViewController {
         JellyfinAPI.login(serverURL: serverURL, username: user, password: pass) { success, errorMsg in
             self.setLoading(false)
             if success {
-                self.navigationController?.setViewControllers([LibraryListVC()], animated: true)
+                self.navigationController?.setViewControllers([HomeVC()], animated: true)
             } else {
                 self.showAlert(errorMsg ?? "Connection failed.")
             }

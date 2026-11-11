@@ -45,10 +45,11 @@ final class DebugLog {
     }
 
     func log(_ category: String, _ message: String) {
-        let stamp = dateFormatter.string(from: Date())
-        let line = "[\(stamp)] [\(category)] \(message)\n"
         queue.async { [weak self] in
-            self?.append(line)
+            guard let self = self else { return }
+            // DateFormatter is not thread-safe on iOS6; serialize formatting too.
+            let stamp = self.dateFormatter.string(from: Date())
+            self.append("[\(stamp)] [\(category)] \(message)\n")
         }
     }
 
@@ -60,7 +61,9 @@ final class DebugLog {
             fh.write(data)
             fh.closeFile()
         } else {
-            try? data.write(to: url)
+            // Swift Data.write calls NSData.enumerateByteRangesUsingBlock:,
+            // which was introduced in iOS7. Use the iOS6 NSData entry point.
+            _ = (data as NSData).write(toFile: url.path, atomically: true)
         }
         trimIfNeeded()
     }
@@ -74,7 +77,8 @@ final class DebugLog {
               let content = try? String(contentsOf: url, encoding: .utf8) else { return }
         let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
         let trimmed = lines.suffix(lines.count / 2).joined(separator: "\n") + "\n"
-        try? trimmed.write(to: url, atomically: true, encoding: .utf8)
+        try? (trimmed as NSString).write(toFile: url.path, atomically: true,
+                                        encoding: String.Encoding.utf8.rawValue)
     }
 
     // MARK: - Retrieval for the "copy to clipboard" UI
