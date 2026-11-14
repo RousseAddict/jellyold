@@ -19,7 +19,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         ]
 
         window = UIWindow(frame: UIScreen.main.bounds)
-        let root: UIViewController = JellyfinServer.isConfigured ? LibraryListVC() : ServerSetupVC()
+        let root: UIViewController = JellyfinServer.isConfigured ? HomeVC() : ServerSetupVC()
         let nav = UINavigationController(rootViewController: root)
         nav.navigationBar.barStyle = .black
         nav.navigationBar.tintColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1.0)

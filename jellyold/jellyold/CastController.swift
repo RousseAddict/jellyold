@@ -72,6 +72,11 @@ final class CastController {
     // Set when the receiver reports the media played to the end, so the teardown
     // that follows doesn't write a resume position sitting at the very end.
     private var didFinish = false
+    // Video casts report to Jellyfin like local playback does (see PlaybackReporter);
+    // driven from progressReceived rather than a timer. Nil for audio and photos.
+    private var reporter: PlaybackReporter?
+    // Where this cast started, reported instead of a position under 10 s.
+    private var resumeFrom: Double = 0
 
     private static let skipDebounce: TimeInterval = 0.6
     // A receiver lands on a segment/keyframe boundary, not the exact second asked for.
@@ -138,6 +143,12 @@ final class CastController {
         playStateHoldUntil = 0
         lastSavedTime = startTime
         didFinish = false
+        resumeFrom = startTime
+        reporter = kind == .video
+            ? PlaybackReporter(item: item,
+                               playSessionId: UUID().uuidString.replacingOccurrences(of: "-", with: ""),
+                               playMethod: "Transcode")
+            : nil
 
         let s = CastSession(device: device)
         session = s
@@ -151,7 +162,11 @@ final class CastController {
 
     func stop() {
         guard let s = session else { return }
-        if !didFinish { savePosition(currentTime) }
+        if !didFinish {
+            savePosition(currentTime)
+            reporter?.stop(at: currentTime > 10 ? currentTime : resumeFrom)
+        }
+        reporter = nil
         s.stop()
         session = nil
         device = nil
@@ -325,6 +340,15 @@ final class CastController {
             }
         }
         savePositionIfDue(currentTime)
+        // Started = the receiver actually played, so a cast that never loads reports nothing.
+        if let r = reporter, sourceStarted {
+            let t = currentTime > 10 ? currentTime : resumeFrom
+            if r.isStarted {
+                r.progress(at: t, paused: playerState == "PAUSED")
+            } else {
+                r.start(at: t)
+            }
+        }
         onState?(state)
         emitProgress()
     }
@@ -334,6 +358,8 @@ final class CastController {
         case .finished:
             didFinish = true
             clearResume()
+            reporter?.finish()
+            reporter = nil
         case .failed(let reason):
             // Fall through the source list (HLS -> progressive mp4) before giving up,
             // resuming from wherever the failed source got to.
@@ -396,28 +422,38 @@ final class CastController {
     }
 
     private func savePosition(_ t: Double) {
-        guard let key = resumeKey else { return }
+        guard let key = resumeKey, let item = item else { return }
         // Same thresholds the local players use: 10s for video, and audio only
         // resumes long-form content so a 3-minute song always restarts.
         let threshold: Double = (kind == .audio) ? 900 : 10
         guard t > 10, duration == 0 || duration > threshold else { return }
-        UserDefaults.standard.set(t, forKey: key)
+        if kind == .video {
+            ResumeStore.save(t, for: item.id)   // also stamps when, to weigh against the server's
+        } else {
+            UserDefaults.standard.set(t, forKey: key)
+        }
     }
 
     private func clearResume() {
-        guard let key = resumeKey else { return }
-        UserDefaults.standard.removeObject(forKey: key)
+        guard let key = resumeKey, let item = item else { return }
+        if kind == .video {
+            ResumeStore.clear(item.id)
+        } else {
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 
-    // The position to seed a new cast with, mirroring the local players' rules.
-    func savedResumePosition(for item: MediaItem, kind: Kind) -> Double {
-        let key: String
+    // The position to seed a new cast with, mirroring the local players' rules: video
+    // weighs this device's resume point against Jellyfin's (`server`), as VideoPlayerVC does.
+    func savedResumePosition(for item: MediaItem, kind: Kind, server: ServerPlayState? = nil) -> Double {
         switch kind {
-        case .video: key = "resume_\(item.id)"
-        case .audio: key = "aresume_\(item.id)"
-        case .photo: return 0
+        case .video:
+            return ResumeStore.startPosition(for: item.id, server: server)
+        case .audio:
+            let saved = UserDefaults.standard.double(forKey: "aresume_\(item.id)")
+            return saved > 10 ? saved : 0
+        case .photo:
+            return 0
         }
-        let saved = UserDefaults.standard.double(forKey: key)
-        return saved > 10 ? saved : 0
     }
 }

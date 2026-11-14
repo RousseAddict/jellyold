@@ -30,13 +30,91 @@ class JellyfinAPI {
         }
     }
 
+    // MARK: - Libraries + Home rows
+    //
+    // Completions run on the main thread with either a list or a message fit for
+    // EmptyStateView.loadFailed — never both.
+
+    private static let notSignedIn = "This device isn't signed in to a server."
+    private static let unreadable = "The server's reply couldn't be read."
+
+    // What a card needs, and only the image types it picks from (ItemImages): without
+    // EnableImageTypes every list carries every image tag and parent link, a lot of
+    // extra JSON for an A5 to parse. Overview is for the detail page a card opens.
+    // UserData (resume point, watched) comes by default on these user-scoped calls.
+    private static let cardParams = "Fields=Overview,PrimaryImageAspectRatio,SeriesPrimaryImage"
+        + "&EnableImageTypes=Primary,Backdrop,Thumb&ImageTypeLimit=1"
+
+    static func getLibraries(completion: @escaping ([Library]?, String?) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion(nil, notSignedIn); return }
+        fetchList(url: "\(serverURL)/Users/\(userId)/Views") { rows, error in
+            completion(rows?.compactMap { Library(json: $0) }, error)
+        }
+    }
+
+    // Videos with a resume point, most recently watched first.
+    static func getResume(limit: Int, completion: @escaping ([MediaItem]?, String?) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion(nil, notSignedIn); return }
+        let url = "\(serverURL)/Users/\(userId)/Items/Resume?Limit=\(limit)&MediaTypes=Video"
+            + "&EnableTotalRecordCount=false&\(cardParams)"
+        fetchItems(url: url, completion: completion)
+    }
+
+    // The next unwatched episode of each show in progress. EnableResumable=false leaves
+    // out episodes already in Continue watching, so one never shows in both rows.
+    static func getNextUp(limit: Int, completion: @escaping ([MediaItem]?, String?) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion(nil, notSignedIn); return }
+        let url = "\(serverURL)/Shows/NextUp?UserId=\(userId)&Limit=\(limit)&EnableResumable=false"
+            + "&EnableTotalRecordCount=false&\(cardParams)"
+        fetchItems(url: url, completion: completion)
+    }
+
+    // Newest additions to one library. GroupItems folds a batch of new episodes into
+    // their series (and tracks into their album), as Jellyfin's own home page does.
+    static func getLatest(in library: Library, limit: Int,
+                          completion: @escaping ([MediaItem]?, String?) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion(nil, notSignedIn); return }
+        let url = "\(serverURL)/Users/\(userId)/Items/Latest?ParentId=\(library.id)&Limit=\(limit)"
+            + "&GroupItems=true&\(cardParams)"
+        fetchItems(url: url, completion: completion)
+    }
+
+    private static func fetchItems(url: String, completion: @escaping ([MediaItem]?, String?) -> Void) {
+        fetchList(url: url) { rows, error in
+            completion(rows?.compactMap { MediaItem(json: $0) }, error)
+        }
+    }
+
+    // Most list endpoints wrap their rows as {"Items": [...]}, but Items/Latest returns
+    // a bare array — accept either shape.
+    private static func fetchList(url: String, completion: @escaping ([[String: Any]]?, String?) -> Void) {
+        HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { data, error in
+            if let error = error { completion(nil, error.localizedDescription); return }
+            guard let data = data, let obj = try? JSONSerialization.jsonObject(with: data) else {
+                completion(nil, unreadable); return
+            }
+            if let rows = obj as? [[String: Any]] {
+                completion(rows, nil)
+            } else if let rows = (obj as? [String: Any])?["Items"] as? [[String: Any]] {
+                completion(rows, nil)
+            } else {
+                completion(nil, unreadable)
+            }
+        }
+    }
+
     // MARK: - Media Info (streams + file metadata)
 
-    // Single round trip to /Users/{userId}/Items/{itemId}, used both for the audio/subtitle
-    // track pickers (MediaStreams) and the detail page's file-metadata section (size/date/
-    // container/codec) — the same response already carries all of it.
+    // Single round trip to /Users/{userId}/Items/{itemId}, used for the audio/subtitle
+    // track pickers (MediaStreams), the detail page's file-metadata section (size/date/
+    // container/codec) and the server's resume point (UserData) — the same response
+    // already carries all of it.
     static func getMediaInfo(itemId: String, completion: @escaping ([MediaStream], MediaFileInfo) -> Void) {
-        let empty = MediaFileInfo(sizeBytes: nil, dateCreated: nil, container: nil, videoCodec: nil)
+        let empty = MediaFileInfo(sizeBytes: nil, dateCreated: nil, container: nil, videoCodec: nil, playState: nil)
         guard let serverURL = JellyfinServer.serverURL,
               let userId = JellyfinServer.userId else { completion([], empty); return }
         let url = "\(serverURL)/Users/\(userId)/Items/\(itemId)"
@@ -55,16 +133,18 @@ class JellyfinAPI {
             let container = (first?["Container"] as? String)?.components(separatedBy: ",").first
             let videoCodec = streamsJSON.first { ($0["Type"] as? String) == "Video" }?["Codec"] as? String
             let dateCreated = (json["DateCreated"] as? String).flatMap(parseServerDate)
+            let playState = ServerPlayState(userData: json["UserData"] as? [String: Any])
 
             completion(streams, MediaFileInfo(sizeBytes: sizeBytes, dateCreated: dateCreated,
-                                               container: container, videoCodec: videoCodec))
+                                               container: container, videoCodec: videoCodec,
+                                               playState: playState))
         }
     }
 
     // Jellyfin emits e.g. "2023-05-01T12:34:56.7890000Z" (7-digit fractional seconds, not a
     // standard format DateFormatter can parse directly) — truncate to whole seconds, which is
-    // plenty of precision for a "date added" display.
-    private static func parseServerDate(_ s: String) -> Date? {
+    // plenty of precision for a "date added" display or a last-played comparison.
+    static func parseServerDate(_ s: String) -> Date? {
         let datePart = s.components(separatedBy: ".").first ?? s
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -81,4 +161,5 @@ struct MediaFileInfo {
     let dateCreated: Date?
     let container: String?
     let videoCodec: String?
+    let playState: ServerPlayState?
 }

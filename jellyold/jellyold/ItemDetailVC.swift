@@ -458,7 +458,9 @@ class ItemDetailVC: UIViewController {
             VideoPlayerVC(item: item,
                           audioIndex: selectedAudioIndex,
                           subtitleIndex: selectedSubtitleIndex,
-                          forceTranscode: forceTranscode),
+                          forceTranscode: forceTranscode,
+                          // The list's UserData covers a tap before getMediaInfo answers.
+                          serverState: fileInfo?.playState ?? item.playState),
             animated: true
         )
     }
@@ -571,7 +573,8 @@ class ItemDetailVC: UIViewController {
         // from the device.
         let sources = isAudio ? audioCastSources() : videoCastSources(quality: quality ?? .original)
 
-        let start = CastController.shared.savedResumePosition(for: item, kind: kind)
+        let start = CastController.shared.savedResumePosition(for: item, kind: kind,
+                                                              server: fileInfo?.playState ?? item.playState)
         CastController.shared.start(item: item, kind: kind, device: device,
                                     sources: sources, startTime: start)
         guard CastController.shared.isCasting else { return }

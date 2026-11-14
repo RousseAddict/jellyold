@@ -52,6 +52,9 @@ class CurlFetcher {
     // Dedicated serial queue for file downloads, kept separate from curlQueue so a
     // multi-GB movie download never blocks API calls or thumbnail fetches.
     private static let downloadQueue = DispatchQueue(label: "com.jellyold.curl.download")
+    // Playback reports (PlaybackReporter) get a queue of their own too: an unreachable
+    // server would otherwise park a report in front of every page load on curlQueue.
+    private static let reportQueue = DispatchQueue(label: "com.jellyold.curl.report")
     // Thread-safe once-init: Swift static let uses dispatch_once. The first
     // background thread to touch this runs curl_global_init exactly once.
     // Never run from the main thread (crashes — OpenSSL threading init).
@@ -103,6 +106,24 @@ class CurlFetcher {
             DispatchQueue.main.async {
                 release(fetcher)
                 completion(data)
+            }
+        }
+    }
+
+    // Fire-and-forget POST for playback reports, on reportQueue with a short timeout.
+    // Jellyfin answers these with 204 No Content, which still counts as success here.
+    static func postReport(url: String,
+                           headers: [String: String],
+                           body: Data,
+                           timeout: Int = 5,
+                           completion: @escaping (Bool) -> Void) {
+        let fetcher = CurlFetcher()
+        retain(fetcher)
+        CurlFetcher.reportQueue.async {
+            let ok = fetcher.syncPostData(url: url, headers: headers, body: body, timeout: timeout) != nil
+            DispatchQueue.main.async {
+                release(fetcher)
+                completion(ok)
             }
         }
     }

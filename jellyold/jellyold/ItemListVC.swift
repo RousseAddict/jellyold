@@ -55,8 +55,13 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         }
     }
 
-    init(library: Library) {
+    // Home's "Recently added — See all" opens newest first. It isn't saved: the sort
+    // remembered for this library (sortKey) only changes when the Sort button is used.
+    private let sortByDateAdded: Bool
+
+    init(library: Library, sortByDateAdded: Bool = false) {
         self.library = library
+        self.sortByDateAdded = sortByDateAdded
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -65,7 +70,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         super.viewDidLoad()
         title = library.name
         view.backgroundColor = bgColor
-        currentSortIndex = UserDefaults.standard.integer(forKey: sortKey)
+        currentSortIndex = sortByDateAdded ? 0 : UserDefaults.standard.integer(forKey: sortKey)   // 0 = Date Added
         if currentSortIndex >= sortOptions.count { currentSortIndex = 0 }
         setupCollectionView()
         setupSpinner()
@@ -297,63 +302,13 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     // MARK: - Selection
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        let item = items[indexPath.item]
-        switch item.type {
-        case "Series":
-            navigationController?.pushViewController(SeasonListVC(series: item), animated: true)
-        case "Folder", "CollectionFolder", "PhotoAlbum":
-            // Drill into generic folders (e.g. custom TV content not parsed as Series,
-            // or a dated subfolder inside a home videos & photos library)
-            let child = Library(id: item.id, name: item.name, collectionType: "folder")
-            navigationController?.pushViewController(ItemListVC(library: child), animated: true)
-        case "Photo":
-            showPhoto(at: indexPath.item)
-        case "MusicArtist":
-            let child = Library(id: item.id, name: item.name, collectionType: "musicArtist")
-            navigationController?.pushViewController(ItemListVC(library: child), animated: true)
-        case "MusicAlbum":
-            let child = Library(id: item.id, name: item.name, collectionType: "musicAlbum")
-            navigationController?.pushViewController(ItemListVC(library: child), animated: true)
-        case "Playlist":
-            let child = Library(id: item.id, name: item.name, collectionType: "playlistContent")
-            navigationController?.pushViewController(ItemListVC(library: child), animated: true)
-        case "Audio":
-            playAudio(at: indexPath.item)
-        default:
-            navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
-        }
-    }
-
-    // MARK: - Photos
-
-    // A home videos folder mixes photos and videos, so the viewer swipes through a
-    // Photo-only projection of the loaded page with the tapped row remapped into it.
-    private func showPhoto(at index: Int) {
-        var photos: [MediaItem] = []
-        var start = 0
-        for i in 0..<items.count where items[i].type == "Photo" {
-            if i == index { start = photos.count }
-            photos.append(items[i])
-        }
-        guard !photos.isEmpty else { return }
-        navigationController?.pushViewController(PhotoVC(items: photos, startAt: start), animated: true)
+        ItemRouter.open(items, at: indexPath.item, from: navigationController)
     }
 
     // MARK: - Audio
 
-    // Queues every Audio item in the loaded page (a playlist can hold videos
-    // too, so the queue is built from an Audio-only projection and the tapped
-    // row is remapped into it) and starts at the tapped track.
     private func playAudio(at index: Int) {
-        var audioItems: [MediaItem] = []
-        var start = 0
-        for i in 0..<items.count where items[i].type == "Audio" {
-            if i == index { start = audioItems.count }
-            audioItems.append(items[i])
-        }
-        guard !audioItems.isEmpty else { return }
-        AudioQueue.shared.play(items: audioItems, startAt: start)
-        navigationController?.pushViewController(NowPlayingVC(), animated: true)
+        ItemRouter.playAudio(items, at: index, from: navigationController)
     }
 
     @objc private func longPressed(_ g: UILongPressGestureRecognizer) {

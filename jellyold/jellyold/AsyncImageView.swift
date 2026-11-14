@@ -4,7 +4,9 @@ class AsyncImageView: UIImageView {
 
     private static let cache: NSCache<NSString, UIImage> = {
         let c = NSCache<NSString, UIImage>()
-        c.countLimit = 60
+        // Home shows ~8 rows of up to 16 small cards; at 60 entries scrolling back up
+        // re-downloaded them. The byte limit below is still what bounds memory.
+        c.countLimit = 150
         c.totalCostLimit = 25 * 1024 * 1024 // 25 MB
         return c
     }()

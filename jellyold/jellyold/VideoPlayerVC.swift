@@ -15,6 +15,17 @@ class VideoPlayerVC: UIViewController {
     private var selectedSubtitleIndex: Int?     // Jellyfin stream index — SubtitleStreamIndex URL param
     private var forceTranscode: Bool            // forces Jellyfin to transcode and honour stream index params
 
+    // Jellyfin's view of this item as the detail page loaded it, weighed against this
+    // device's own resume point (ResumeStore) to pick where playback starts.
+    private let serverState: ServerPlayState?
+    private var startPosition: Double = 0
+    // One per playback: in the transcode URL, so the stop report also ends that ffmpeg
+    // job, and in every report.
+    private let playSessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    private var reporter: PlaybackReporter?
+    // Played to the end: the teardown that follows must not save or report a position.
+    private var didFinish = false
+
 #if IOS6_TARGET
     private var player: MPMoviePlayerController?
 #else
@@ -28,11 +39,13 @@ class VideoPlayerVC: UIViewController {
     init(item: MediaItem,
          audioIndex: Int? = nil,
          subtitleIndex: Int? = nil,
-         forceTranscode: Bool = false) {
+         forceTranscode: Bool = false,
+         serverState: ServerPlayState? = nil) {
         self.item = item
         self.selectedAudioIndex = audioIndex
         self.selectedSubtitleIndex = subtitleIndex
         self.forceTranscode = forceTranscode
+        self.serverState = serverState
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -47,9 +60,18 @@ class VideoPlayerVC: UIViewController {
         // session at the same time.
         AudioPlayer.shared.pause()
         activateAudioSession()
+        startPosition = ResumeStore.startPosition(for: item.id, server: serverState)
         if isAudio { setupArtwork() }
         setupPlayer()
         setupBufferSpinner()
+        if !isAudio {
+            // Track choices only reach the server in the forced-transcode URL.
+            reporter = PlaybackReporter(
+                item: item, playSessionId: playSessionId,
+                playMethod: DownloadManager.isDownloaded(item.id) ? "DirectPlay" : "Transcode",
+                audioIndex: forceTranscode ? selectedAudioIndex : nil,
+                subtitleIndex: forceTranscode ? selectedSubtitleIndex : nil)
+        }
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -78,6 +100,12 @@ class VideoPlayerVC: UIViewController {
         avPlayer?.play()
 #endif
         restorePosition()
+        if let r = reporter, !r.isStarted {
+            r.begin { [weak self] in
+                guard let self = self else { return nil }
+                return PlaybackSample(position: self.reportablePosition(), isPlaying: self.playerIsPlaying())
+            }
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -98,7 +126,12 @@ class VideoPlayerVC: UIViewController {
             navigationController?.setNavigationBarHidden(false, animated: animated)
             UIApplication.shared.setStatusBarHidden(false, with: .fade)
         }
-        savePosition()
+        // Read before the player below is stopped.
+        if !didFinish {
+            savePosition()
+            reporter?.stop(at: reportablePosition())
+        }
+        reporter = nil
         NotificationCenter.default.removeObserver(self)
 #if IOS6_TARGET
         player?.stop()
@@ -201,8 +234,7 @@ class VideoPlayerVC: UIViewController {
             if forceTranscode {
                 // A unique PlaySessionId prevents Jellyfin reusing a cached direct-stream
                 // session for the same DeviceId, which would silently ignore the params.
-                let sessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
-                params.append("PlaySessionId=\(sessionId)")
+                params.append("PlaySessionId=\(playSessionId)")
                 params.append("EnableDirectStream=false")
                 params.append("EnableDirectPlay=false")
                 if let audioIdx = selectedAudioIndex {
@@ -287,14 +319,21 @@ class VideoPlayerVC: UIViewController {
         DebugLog.shared.log("Player", "duration=\(String(format: "%.1f", player.duration))s naturalSize=\(Int(player.naturalSize.width))x\(Int(player.naturalSize.height))")
     }
 
-    private func savePosition() {
-        guard let player = player else { return }
-        let t = player.currentPlaybackTime
-        if t > 10 { UserDefaults.standard.set(t, forKey: resumeKey) }
+    // nil until the player knows (NaN before the stream has loaded).
+    private func playerTime() -> Double? {
+        guard let t = player?.currentPlaybackTime, t.isFinite else { return nil }
+        return t
+    }
+
+    // playbackState alone says .playing as soon as play() is called, before anything
+    // has loaded — a stream that never loads must not count as started.
+    private func playerIsPlaying() -> Bool {
+        guard let p = player else { return false }
+        return p.playbackState == .playing && p.loadState.contains(.playable)
     }
 
     private func restorePosition() {
-        let saved = UserDefaults.standard.double(forKey: resumeKey)
+        let saved = startPosition
         guard saved > 10 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             self?.player?.currentPlaybackTime = saved
@@ -374,14 +413,21 @@ class VideoPlayerVC: UIViewController {
         bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
     }
 
-    private func savePosition() {
-        guard let avPlayer = avPlayer else { return }
-        let t = avPlayer.currentTime().seconds
-        if t > 10 { UserDefaults.standard.set(t, forKey: resumeKey) }
+    // nil until the player knows (NaN before the item is ready).
+    private func playerTime() -> Double? {
+        guard let t = avPlayer?.currentTime().seconds, t.isFinite else { return nil }
+        return t
+    }
+
+    // rate is already 1 while the item is still loading; readyToPlay is what says
+    // the stream actually opened.
+    private func playerIsPlaying() -> Bool {
+        guard let p = avPlayer, let current = p.currentItem else { return false }
+        return current.status == .readyToPlay && p.rate > 0
     }
 
     private func restorePosition() {
-        let saved = UserDefaults.standard.double(forKey: resumeKey)
+        let saved = startPosition
         guard saved > 10 else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let player = self?.avPlayer else { return }
@@ -392,23 +438,53 @@ class VideoPlayerVC: UIViewController {
 
     // MARK: - Shared
 
-    private var resumeKey: String { "resume_\(item.id)" }
+    private func savePosition() {
+        guard let t = playerTime(), t > 10 else { return }
+        ResumeStore.save(t, for: item.id)
+    }
+
+    // The position the reports carry. Under 10 s doesn't count, same as savePosition:
+    // backing out before the 1.5 s resume seek has landed must report the resume point,
+    // not wipe it on the server.
+    private func reportablePosition() -> Double {
+        if let t = playerTime(), t > 10 { return t }
+        return startPosition
+    }
 
     @objc private func playbackFinished(_ notification: Notification) {
 #if IOS6_TARGET
         // "playbackError" here is the single most telling line when a stream
         // plays on one device but not another — MPMoviePlayerController
         // reports a failed decode/load as a *finish*, not as an error.
-        let reasons = ["playbackEnded", "userExited", "playbackError"]
         let raw = (notification.userInfo?[MPMoviePlayerPlaybackDidFinishReasonUserInfoKey] as? NSNumber)?.intValue ?? -1
-        let reason = (raw >= 0 && raw < reasons.count) ? reasons[raw] : "unknown(\(raw))"
+        let reason: String
+        switch raw {
+        case MPMovieFinishReason.playbackEnded.rawValue: reason = "playbackEnded"
+        case MPMovieFinishReason.playbackError.rawValue: reason = "playbackError"
+        case MPMovieFinishReason.userExited.rawValue:    reason = "userExited"
+        default:                                         reason = "unknown(\(raw))"
+        }
         let err = notification.userInfo?["error"] as? NSError
         DebugLog.shared.log("Player", "playbackFinished reason=\(reason)"
             + (err == nil ? "" : " error=[domain=\(err!.domain) code=\(err!.code) \(err!.localizedDescription)]"))
+        // Done and errors end here too; viewWillDisappear saves and reports those.
+        var playedToEnd = raw == MPMovieFinishReason.playbackEnded.rawValue
 #else
         DebugLog.shared.log("Player", "playbackFinished (played to end)")
+        var playedToEnd = true
 #endif
-        UserDefaults.standard.removeObject(forKey: resumeKey)
+        // A stream that dies part-way can still end as "played to the end"; only call it
+        // finished if the player got near the end (or can no longer say where it was).
+        if playedToEnd, let t = playerTime(), t > 10,
+           let dur = item.durationSeconds, t < dur * 0.9 {
+            DebugLog.shared.log("Player", "ended at \(Int(t))s of \(Int(dur))s — keeping it resumable")
+            playedToEnd = false
+        }
+        if playedToEnd {
+            didFinish = true
+            ResumeStore.clear(item.id)
+            reporter?.finish()
+        }
         navigationController?.popViewController(animated: true)
     }
 }
