@@ -2,15 +2,21 @@ import Foundation
 
 // MARK: - CastSession
 //
-// A single Chromecast CASTV2 session: TLS-connects to the device on port 8009 (via the
-// curl bridge's CONNECT_ONLY socket — OpenSSL speaks the modern ciphers iOS 6 can't), then
-// runs the CONNECT -> LAUNCH -> LOAD -> PLAY handshake and keeps a heartbeat alive.
+// One TLS connection to a Chromecast (port 8009, via the curl bridge's CONNECT_ONLY socket —
+// OpenSSL speaks the modern ciphers iOS 6 can't) and the CASTV2 conversation over it. It plays
+// media on the Default Media Receiver in one of two ways:
+//   - start(): get the receiver app running (launching it only when it isn't), then LOAD.
+//   - join():  attach to media the receiver is ALREADY playing. The phone lost its connection
+//              (it slept, or iOS suspended the app on the lock screen) while the TV carried on;
+//              nothing is launched or loaded, the media session is adopted as it stands.
+// The TV doesn't care which socket its commands arrive on, so a lost connection is replaced
+// by a new session that joins — CastController owns that decision.
 //
 // THREADING: everything TLS runs on ONE background thread (`ioLoop`). OpenSSL SSL_read /
 // SSL_write on the same SSL object are not thread-safe, so the socket is never touched from
-// two threads. Public methods (play/pause/seek/load/stop) enqueue a command that the ioLoop
-// runs between recv poll cycles, so all session state is only ever read and written on that
-// one thread. Callbacks fire back on the main thread.
+// two threads. Public methods enqueue a closure that the ioLoop runs between recv polls, so
+// all session state is only ever read and written on that one thread. Events go back on the
+// main thread.
 //
 // NOTE: the Chromecast fetches the media URL itself, so it must be the real Jellyfin server
 // URL — LocalStreamProxy (127.0.0.1) is unreachable from the device and must not be used here.
@@ -19,24 +25,75 @@ import Foundation
 enum CastEnd {
     case finished              // played to the end
     case failed(String)        // LOAD rejected, or the receiver hit a playback error
-    case stoppedRemotely       // stopped from the TV / another sender took the device
+    case stoppedRemotely       // stopped from the TV / Google Home / another sender took over
+    case disconnected(String)  // the TV couldn't be reached (again); the text says which
+}
+
+// What join() found playing on the TV.
+struct CastJoin {
+    let contentId: String
+    // The item id our LOAD put in customData; "" when the receiver doesn't echo it back.
+    let itemId: String
+    // The offset the session adopted for this media (see CastSession.timeOffset).
+    let timeOffset: Double
 }
 
 final class CastSession: NSObject {
 
-    private let device: CastDevice
-    private var handle: CurlHandle?
+    enum Event {
+        // Connection-level progress: "connected", "app ready", "loading media".
+        case state(String)
+        // A MEDIA_STATUS for the current media. `position` already includes timeOffset;
+        // `playerState` is the receiver's raw PLAYING / PAUSED / BUFFERING / IDLE.
+        case progress(position: Double, duration: Double, playerState: String)
+        // The current media stopped for good.
+        case ended(CastEnd)
+        // join() attached to the media already on the TV. Its first .progress follows.
+        case joined(CastJoin)
+        // join() found nothing to attach to: no receiver app running, or one with no media.
+        case nothingToJoin
+        // The TV refused to start the Default Media Receiver.
+        case launchFailed
+        // The TV's volume, 0...1, or -1 when it can't be changed (fixed-volume output).
+        case volume(Double)
+        // The receiver app went away — stopped from the TV or Google Home, or another app
+        // took the screen. The session closes itself after this.
+        case appClosed
+        // The connection is gone. `lost` is false only when stop()/close() asked for it.
+        case closed(lost: Bool)
+    }
 
-    // Outbound frames + commands waiting for the ioLoop, guarded by `lock`.
-    private var outbound = [Data]()
-    private var commands = [() -> Void]()
+    let device: CastDevice
+    var onEvent: ((Event) -> Void)?
+
+    private struct PendingLoad {
+        let url: String
+        let contentType: String
+        let startTime: Double
+        let timeOffset: Double
+        let autoplay: Bool
+    }
+
+    // Shared with the caller's thread, guarded by `lock`.
     private let lock = NSLock()
+    private var commands = [() -> Void]()
+    private var started = false
 
-    private var running = false
+    // Set before the ioLoop starts; read-only afterwards.
+    private var joining = false
+    private var itemId = ""
+    private var metadata: [String: Any]?
+    // join(): what this phone last loaded, so the adopted media gets the right timeOffset.
+    private var joinContentId = ""
+    private var joinTimeOffset: Double = 0
+
+    // Everything below belongs to the ioLoop thread.
+    private var handle: CurlHandle?
     private var requestId = 0
-
-    // The app's transport channel id, learned from RECEIVER_STATUS after LAUNCH.
+    private var launched = false
+    // The receiver app's channel and session, learned from RECEIVER_STATUS.
     private var transportId: String?
+    private var appSessionId: String?
     private var mediaSessionId: Int?
     // Media sessions replaced by a newer LOAD. The receiver still reports their teardown
     // (IDLE/INTERRUPTED) after the new LOAD, which must not read as "playback ended".
@@ -50,62 +107,73 @@ final class CastSession: NSObject {
     private var awaitingLoad = false
     private var maxSeenMediaSessionId = 0
     private var firstNewMediaSessionId = 0
-    // Set once onEnded fired for the current LOAD. The receiver often reports one failure
+    // Set once .ended fired for the current LOAD. The receiver often reports one failure
     // twice (LOAD_FAILED + an IDLE/ERROR status), and the second must not end a fallback.
     private var endReported = false
-
-    // The media to LOAD once the receiver app is running.
-    private var pendingMediaURL: String?
-    private var pendingContentType = "video/mp4"
-    private var pendingStartTime: Double = 0
-    private var pendingMetadata: [String: Any]?
-    private var pendingAutoplay = true
+    // join() asked for the media status and is waiting for the first answer.
+    private var awaitingJoin = false
+    // A LOAD waiting for the receiver app to come up.
+    private var pendingLoad: PendingLoad?
     // Added to every position the receiver reports. Non-zero when the URL itself starts
     // mid-file (a re-requested progressive stream), whose timeline the receiver sees as 0-based.
     private var timeOffset: Double = 0
     // A SEEK asked for before the receiver assigned a mediaSessionId; sent with the first status.
     private var deferredSeek: Double?
+    private var lastVolume: Double = -2
 
     private var lastHeartbeat = Date()
     private var lastStatusPoll = Date()
+    private var lastInbound = Date()
+    // Set by probe(): the connection is presumed dead unless the TV answers by then.
+    private var probeDeadline: Date?
+    // Set by a stop() made before the receiver app was known: STOP goes out as soon as a
+    // RECEIVER_STATUS names it, and the session gives up waiting at this time.
+    private var stopDeadline: Date?
+    // Why the loop is ending, once it is. nil = keep going.
+    private var exitLost: Bool?
 
     private static let senderId = "sender-0"
     private static let platformReceiver = "receiver-0"
-
-    // Reports connection-level state transitions on the main thread.
-    var onState: ((String) -> Void)?
-    // Reports playback on the main thread: (currentSeconds, receiverDurationSeconds, playerState).
-    // currentSeconds already includes timeOffset; playerState is the receiver's raw
-    // PLAYING / PAUSED / BUFFERING / IDLE.
-    var onProgress: ((Double, Double, String) -> Void)?
-    // Fires on the main thread when the current media stops for good.
-    var onEnded: ((CastEnd) -> Void)?
+    // The Default Media Receiver — plays a plain media URL, no custom receiver app needed.
+    static let mediaReceiverApp = "CC1AD845"
+    // The TV answers our 5 s heartbeat and the 1 s status poll, so this long without a byte
+    // from it means the connection is gone even when the socket hasn't said so (a suspended
+    // app's socket can look open long after the TV dropped it).
+    private static let silenceLimit: TimeInterval = 30
+    private static let probeTimeout: TimeInterval = 6
+    private static let stopTimeout: TimeInterval = 5
 
     init(device: CastDevice) {
         self.device = device
         super.init()
     }
 
-    // MARK: - Public API (thread-safe — enqueues work for the ioLoop)
+    // MARK: - Public API (any thread — work is queued for the ioLoop)
 
-    // Start the session and, once the receiver app is up, LOAD + play this URL.
-    // `startTime` seeds the receiver's playback position (resume support); `timeOffset`
-    // is where the URL itself starts in the item (see the property).
-    func start(mediaURL: String,
-               contentType: String = "video/mp4",
-               startTime: Double = 0,
-               timeOffset: Double = 0,
-               metadata: [String: Any]? = nil) {
-        pendingMediaURL = mediaURL
-        pendingContentType = contentType
-        pendingStartTime = startTime
-        self.timeOffset = timeOffset
-        pendingMetadata = metadata
-        running = true
+    // Connect, get the media receiver running, and LOAD `mediaURL`. `startTime` seeds the
+    // receiver's position (resume); `timeOffset` is where the URL itself starts in the item.
+    // `itemId` rides in the LOAD's customData, so a later join can recognise the media.
+    func start(mediaURL: String, contentType: String, startTime: Double, timeOffset: Double,
+               itemId: String, metadata: [String: Any]?) {
+        self.itemId = itemId
+        self.metadata = metadata
+        pendingLoad = PendingLoad(url: mediaURL, contentType: contentType, startTime: startTime,
+                                  timeOffset: timeOffset, autoplay: true)
         DebugLog.shared.log("CAST", "start dev=\(device.name) \(device.host):\(device.port) type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s url=\(DebugLog.redact(mediaURL))")
-        let t = Thread(target: self, selector: #selector(ioLoop), object: nil)
-        t.stackSize = 512 * 1024
-        t.start()
+        run(joining: false)
+    }
+
+    // Connect and attach to whatever the media receiver is already playing. `contentId` and
+    // `timeOffset` are the URL this phone last loaded and its offset: when the TV is still on
+    // that URL its positions are read with that offset. `itemId`/`metadata` are for any
+    // LOAD sent later on this session (a re-LOAD seek, a fallback source).
+    func join(contentId: String, timeOffset: Double, itemId: String, metadata: [String: Any]?) {
+        self.itemId = itemId
+        self.metadata = metadata
+        joinContentId = contentId
+        joinTimeOffset = timeOffset
+        DebugLog.shared.log("CAST", "join dev=\(device.name) \(device.host):\(device.port)")
+        run(joining: true)
     }
 
     // Replace the media on the running receiver app — used to fall back to another
@@ -114,15 +182,10 @@ final class CastSession: NSObject {
               autoplay: Bool) {
         perform {
             DebugLog.shared.log("CAST", "reload type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s autoplay=\(autoplay) url=\(DebugLog.redact(mediaURL))")
-            self.pendingMediaURL = mediaURL
-            self.pendingContentType = contentType
-            self.pendingStartTime = startTime
-            self.timeOffset = timeOffset
-            self.pendingAutoplay = autoplay
             self.deferredSeek = nil
-            if let msid = self.mediaSessionId { self.staleMediaSessionIds.insert(msid) }
-            self.mediaSessionId = nil
-            if let tid = self.transportId { self.loadMedia(mediaURL, transport: tid) }
+            let p = PendingLoad(url: mediaURL, contentType: contentType, startTime: startTime,
+                                timeOffset: timeOffset, autoplay: autoplay)
+            if let tid = self.transportId { self.sendLoad(p, transport: tid) } else { self.pendingLoad = p }
         }
     }
 
@@ -142,70 +205,58 @@ final class CastSession: NSObject {
         }
     }
 
-    // Stop playback + close the session.
+    // The TV's own volume (the receiver's, not the media's), 0...1.
+    func setVolume(_ level: Double) {
+        let v = min(1, max(0, level))
+        perform {
+            // The TV echoes the new level in a RECEIVER_STATUS; that is not news.
+            self.lastVolume = v
+            self.send(CastNS.receiver, to: CastSession.platformReceiver,
+                      ["type": "SET_VOLUME", "volume": ["level": v], "requestId": self.nextRequestId()])
+        }
+    }
+
+    // Ask the TV for its status now and give up on the connection if it doesn't answer
+    // within a few seconds — called when the app comes back to the foreground, since a
+    // socket that sat through a suspension can look open long after the TV dropped it.
+    func probe() {
+        perform {
+            self.probeDeadline = Date().addingTimeInterval(CastSession.probeTimeout)
+            self.requestReceiverStatus()
+        }
+    }
+
+    // Stop the receiver app on the TV (back to its ambient screen), then close. Before the
+    // app is known (still launching, or a join that hasn't heard back) the STOP waits for
+    // the first RECEIVER_STATUS that names it.
     func stop() {
         perform {
-            if let tid = self.transportId {
-                self.enqueue(namespace: CastNS.receiver, destination: CastSession.platformReceiver,
-                             json: ["type": "STOP", "sessionId": tid])
+            self.pendingLoad = nil
+            self.awaitingJoin = false
+            if self.appSessionId != nil {
+                self.sendStopApp()
+            } else {
+                self.stopDeadline = Date().addingTimeInterval(CastSession.stopTimeout)
             }
         }
-        running = false
         DebugLog.shared.log("CAST", "stop")
     }
 
-    // MARK: - I/O loop (single thread; owns all TLS reads/writes)
+    // Close the connection and leave the TV as it is.
+    func close() {
+        perform { self.exitLost = false }
+    }
 
-    @objc private func ioLoop() {
-        CurlFetcher.ensureGlobalInit()
-        guard let h = curl_bridge_init() else { report("init failed"); return }
-        handle = h
-        defer { curl_bridge_cleanup(h); handle = nil }
-
-        let rc = device.host.withCString { curl_bridge_connect_only(h, $0, device.port) }
-        guard rc == 0 else {
-            let msg = String(cString: curl_bridge_strerror(rc))
-            DebugLog.shared.log("CAST", "connect FAILED rc=\(rc) (\(msg))")
-            report("connect failed (\(msg))")
-            reportEnd(.failed("connect failed"))
-            return
-        }
-        DebugLog.shared.log("CAST", "connected \(device.name)")
-        report("connected")
-
-        // Virtual-connect + launch the default media receiver.
-        enqueue(namespace: CastNS.connection, destination: CastSession.platformReceiver,
-                json: ["type": "CONNECT"])
-        launchReceiver()
-
-        var inbound = [UInt8]()
-        var recvBuf = [UInt8](repeating: 0, count: 16 * 1024)
-
-        while running {
-            runCommands()
-            flushOutbound(h)
-            heartbeatIfDue()
-            statusPollIfDue()
-
-            let n = curl_bridge_recv(h, &recvBuf, recvBuf.count, 500)   // 500ms poll window
-            if n < 0 {
-                DebugLog.shared.log("CAST", "disconnected")
-                report("disconnected")
-                if running && !endReported { reportEnd(.failed("disconnected")) }
-                break
-            }
-            if n > 0 {
-                inbound.append(contentsOf: recvBuf[0..<Int(n)])
-                drainFrames(&inbound)
-            }
-        }
-
-        // stop() flips `running` right after queueing its STOP, so the loop can exit
-        // before running it — drain once more, then tell the device we're leaving.
-        runCommands()
-        enqueue(namespace: CastNS.connection, destination: transportId ?? CastSession.platformReceiver,
-                json: ["type": "CLOSE"])
-        flushOutbound(h)
+    private func run(joining: Bool) {
+        lock.lock()
+        let first = !started
+        started = true
+        lock.unlock()
+        guard first else { return }
+        self.joining = joining
+        let t = Thread(target: self, selector: #selector(ioLoop), object: nil)
+        t.stackSize = 512 * 1024
+        t.start()
     }
 
     private func perform(_ block: @escaping () -> Void) {
@@ -214,12 +265,84 @@ final class CastSession: NSObject {
         lock.unlock()
     }
 
+    // MARK: - I/O loop (single thread; owns the socket and all protocol state)
+
+    @objc private func ioLoop() {
+        CurlFetcher.ensureGlobalInit()
+        guard let h = curl_bridge_init() else { emit(.closed(lost: true)); return }
+        handle = h
+        defer { curl_bridge_cleanup(h); handle = nil }
+
+        let rc = device.host.withCString { curl_bridge_connect_only(h, $0, device.port) }
+        guard rc == 0 else {
+            let msg = String(cString: curl_bridge_strerror(rc))
+            DebugLog.shared.log("CAST", "connect FAILED rc=\(rc) (\(msg))")
+            emit(.closed(lost: true))
+            return
+        }
+        DebugLog.shared.log("CAST", "connected \(device.name) mode=\(joining ? "join" : "start")")
+        emit(.state("connected"))
+        lastInbound = Date()
+
+        // Ask what is running first: an app that is already up is joined or reused, and
+        // only a missing one is launched.
+        send(CastNS.connection, to: CastSession.platformReceiver, ["type": "CONNECT"])
+        requestReceiverStatus()
+
+        var inbound = [UInt8]()
+        var recvBuf = [UInt8](repeating: 0, count: 16 * 1024)
+
+        while exitLost == nil {
+            runCommands()
+            if exitLost != nil { break }
+            heartbeatIfDue()
+            statusPollIfDue()
+
+            let n = curl_bridge_recv(h, &recvBuf, recvBuf.count, 500)   // 500ms poll window
+            if n < 0 {
+                DebugLog.shared.log("CAST", "socket closed by \(device.name)")
+                exitLost = true
+                break
+            }
+            if n > 0 {
+                lastInbound = Date()
+                probeDeadline = nil
+                inbound.append(contentsOf: recvBuf[0..<Int(n)])
+                drainFrames(&inbound)
+            }
+            guard exitLost == nil else { break }
+            let now = Date()
+            if let d = probeDeadline, now > d {
+                DebugLog.shared.log("CAST", "probe unanswered — connection presumed dead")
+                exitLost = true
+            } else if let d = stopDeadline, now > d {
+                DebugLog.shared.log("CAST", "stop: receiver app never showed up, leaving")
+                exitLost = false
+            } else if now.timeIntervalSince(lastInbound) > CastSession.silenceLimit {
+                DebugLog.shared.log("CAST", "no word from \(device.name) for \(Int(CastSession.silenceLimit))s")
+                exitLost = true
+            }
+        }
+
+        let lost = exitLost ?? true
+        if !lost {
+            // Best effort: leave the receiver's channel and the platform's politely.
+            if let tid = transportId { send(CastNS.connection, to: tid, ["type": "CLOSE"]) }
+            send(CastNS.connection, to: CastSession.platformReceiver, ["type": "CLOSE"])
+        }
+        DebugLog.shared.log("CAST", "session closed lost=\(lost)")
+        emit(.closed(lost: lost))
+    }
+
     private func runCommands() {
         lock.lock()
         let pending = commands
         commands.removeAll()
         lock.unlock()
-        for block in pending { block() }
+        for block in pending {
+            block()
+            if exitLost != nil { return }
+        }
     }
 
     // Pull every complete UInt32-length-prefixed frame out of the inbound buffer and handle it.
@@ -232,27 +355,14 @@ final class CastSession: NSObject {
             let body = Array(inbound[4..<total])
             inbound.removeFirst(total)
             if let msg = CastMessage.parse(body) { handle(msg) }
-        }
-    }
-
-    private func flushOutbound(_ h: CurlHandle) {
-        while true {
-            lock.lock()
-            let frame = outbound.isEmpty ? nil : outbound.removeFirst()
-            lock.unlock()
-            guard let data = frame else { break }
-            _ = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
-                guard let base = raw.baseAddress else { return 0 }
-                return Int(curl_bridge_send(h, base, data.count))
-            }
+            if exitLost != nil { return }
         }
     }
 
     private func heartbeatIfDue() {
         if Date().timeIntervalSince(lastHeartbeat) >= 5 {
             lastHeartbeat = Date()
-            enqueue(namespace: CastNS.heartbeat, destination: CastSession.platformReceiver,
-                    json: ["type": "PING"])
+            send(CastNS.heartbeat, to: CastSession.platformReceiver, ["type": "PING"])
         }
     }
 
@@ -262,9 +372,8 @@ final class CastSession: NSObject {
         guard let tid = transportId, let msid = mediaSessionId else { return }
         if Date().timeIntervalSince(lastStatusPoll) >= 1 {
             lastStatusPoll = Date()
-            requestId += 1
-            enqueue(namespace: CastNS.media, destination: tid,
-                    json: ["type": "GET_STATUS", "mediaSessionId": msid, "requestId": requestId])
+            send(CastNS.media, to: tid,
+                 ["type": "GET_STATUS", "mediaSessionId": msid, "requestId": nextRequestId()])
         }
     }
 
@@ -276,12 +385,17 @@ final class CastSession: NSObject {
 
         switch msg.namespace {
         case CastNS.heartbeat:
-            if type == "PING" {
-                enqueue(namespace: CastNS.heartbeat, destination: CastSession.platformReceiver,
-                        json: ["type": "PONG"])
-            }
+            if type == "PING" { send(CastNS.heartbeat, to: msg.sourceId, ["type": "PONG"]) }
+        case CastNS.connection:
+            // The receiver app closing its channel to us is the app going away.
+            if type == "CLOSE", let tid = transportId, msg.sourceId == tid { receiverAppGone() }
         case CastNS.receiver:
-            if type == "RECEIVER_STATUS" { handleReceiverStatus(obj) }
+            if type == "RECEIVER_STATUS" {
+                handleReceiverStatus(obj)
+            } else if type == "LAUNCH_ERROR" {
+                DebugLog.shared.log("CAST", "LAUNCH_ERROR \(msg.payloadUtf8)")
+                emit(.launchFailed)
+            }
         case CastNS.media:
             if type == "MEDIA_STATUS" { handleMediaStatus(obj) }
             if type == "LOAD_FAILED" || type == "LOAD_CANCELLED" || type == "INVALID_REQUEST" {
@@ -292,25 +406,87 @@ final class CastSession: NSObject {
         }
     }
 
-    // Extract the launched app's transportId, virtual-connect to it, then LOAD the media.
+    // Find the media receiver among the running apps: connect to it, then LOAD (start) or
+    // read back what it is playing (join). Its absence is news too — the app closed.
     private func handleReceiverStatus(_ obj: [String: Any]) {
-        guard let status = obj["status"] as? [String: Any],
-              let apps = status["applications"] as? [[String: Any]],
-              let app = apps.first,
-              let tid = app["transportId"] as? String else { return }
+        guard let st = obj["status"] as? [String: Any] else { return }
+        // NSNumber bridging: `as? Double`/`as? Int` silently fail on the 5.1.5 runtime.
+        if let vol = st["volume"] as? [String: Any],
+           let raw = (vol["level"] as? NSNumber)?.doubleValue {
+            let level = (vol["controlType"] as? String) == "fixed" ? -1 : raw
+            if abs(level - lastVolume) > 0.001 {
+                lastVolume = level
+                emit(.volume(level))
+            }
+        }
+        let apps = (st["applications"] as? [[String: Any]]) ?? []
+        guard let app = apps.first(where: { ($0["appId"] as? String) == CastSession.mediaReceiverApp }),
+              let tid = app["transportId"] as? String else {
+            if stopDeadline != nil {
+                // Nothing running and nothing on its way up: nothing to stop.
+                if !launched { exitLost = false }
+            } else if transportId != nil {
+                receiverAppGone()
+            } else if joining {
+                DebugLog.shared.log("CAST", "join: media receiver not running")
+                emit(.nothingToJoin)
+                exitLost = false
+            } else if !launched {
+                launched = true
+                send(CastNS.receiver, to: CastSession.platformReceiver,
+                     ["type": "LAUNCH", "appId": CastSession.mediaReceiverApp, "requestId": nextRequestId()])
+            }
+            return
+        }
+        appSessionId = (app["sessionId"] as? String) ?? tid
+        if stopDeadline != nil {
+            sendStopApp()
+            return
+        }
         if transportId == tid { return }   // already connected to this app
         transportId = tid
-        report("app ready")
+        emit(.state("app ready"))
+        send(CastNS.connection, to: tid, ["type": "CONNECT"])
+        if joining {
+            awaitingJoin = true
+            send(CastNS.media, to: tid, ["type": "GET_STATUS", "requestId": nextRequestId()])
+        }
+        if let p = pendingLoad {
+            pendingLoad = nil
+            sendLoad(p, transport: tid)
+        }
+    }
 
-        enqueue(namespace: CastNS.connection, destination: tid, json: ["type": "CONNECT"])
-        if let url = pendingMediaURL { loadMedia(url, transport: tid) }
+    private func receiverAppGone() {
+        DebugLog.shared.log("CAST", "media receiver closed on \(device.name)")
+        transportId = nil
+        mediaSessionId = nil
+        emit(.appClosed)
+        exitLost = false
     }
 
     private func handleMediaStatus(_ obj: [String: Any]) {
-        guard let arr = obj["status"] as? [[String: Any]], let first = arr.first else { return }
+        let arr = (obj["status"] as? [[String: Any]]) ?? []
+        guard let first = arr.first else {
+            // No media session on the receiver at all.
+            if awaitingJoin {
+                awaitingJoin = false
+                DebugLog.shared.log("CAST", "join: receiver has no media")
+                emit(.nothingToJoin)
+                exitLost = false
+            }
+            return
+        }
         // NSNumber bridging: `as? Double`/`as? Int` silently fail on the 5.1.5 runtime.
         let rid = (obj["requestId"] as? NSNumber)?.intValue ?? 0
         let msid = (first["mediaSessionId"] as? NSNumber)?.intValue
+
+        if awaitingJoin {
+            awaitingJoin = false
+            adoptJoinedMedia(first)
+            // Then handled like any status: an ended media ends, anything else is adopted.
+        }
+
         if let m = msid {
             if staleMediaSessionIds.contains(m) { return }
             if awaitingLoad && rid != loadRequestId && m < firstNewMediaSessionId {
@@ -362,8 +538,27 @@ final class CastSession: NSObject {
            let d = (media["duration"] as? NSNumber)?.doubleValue, d > 0 {
             dur = d
         }
-        let position = cur + timeOffset
-        DispatchQueue.main.async { [weak self] in self?.onProgress?(position, dur, playerState) }
+        emit(.progress(position: cur + timeOffset, duration: dur, playerState: playerState))
+    }
+
+    // The first status after a join: learn which media this is and the offset its positions
+    // need. The URL this phone last loaded is the surest match; otherwise our own LOAD's
+    // customData carries the offset it was made with.
+    private func adoptJoinedMedia(_ first: [String: Any]) {
+        let media = first["media"] as? [String: Any]
+        let contentId = (media?["contentId"] as? String) ?? ""
+        let custom = media?["customData"] as? [String: Any]
+        let id = (custom?["itemId"] as? String) ?? ""
+        if !joinContentId.isEmpty && contentId == joinContentId {
+            timeOffset = joinTimeOffset
+        } else if let off = (custom?["timeOffset"] as? NSNumber)?.doubleValue {
+            timeOffset = off
+        } else {
+            timeOffset = 0
+        }
+        let state = (first["playerState"] as? String) ?? ""
+        DebugLog.shared.log("CAST", "join: \(state) item=\(id.isEmpty ? "?" : id) offset=\(Int(timeOffset))s sameURL=\(contentId == joinContentId)")
+        emit(.joined(CastJoin(contentId: contentId, itemId: id, timeOffset: timeOffset)))
     }
 
     private func handleMediaError(_ type: String, _ obj: [String: Any]) {
@@ -381,58 +576,86 @@ final class CastSession: NSObject {
 
     private func reportEnd(_ end: CastEnd) {
         endReported = true
-        DispatchQueue.main.async { [weak self] in self?.onEnded?(end) }
+        emit(.ended(end))
     }
 
-    // MARK: - Outbound builders
+    // MARK: - Outbound
 
-    private func launchReceiver() {
-        requestId += 1
-        // CC1AD845 = the Default Media Receiver (plays a plain media URL, no custom app needed).
-        enqueue(namespace: CastNS.receiver, destination: CastSession.platformReceiver,
-                json: ["type": "LAUNCH", "appId": "CC1AD845", "requestId": requestId])
-    }
-
-    private func loadMedia(_ url: String, transport: String) {
-        requestId += 1
-        loadRequestId = requestId
+    private func sendLoad(_ p: PendingLoad, transport: String) {
+        // A new media session is coming; the old one's statuses must not be read as its.
+        if let msid = mediaSessionId { staleMediaSessionIds.insert(msid) }
+        mediaSessionId = nil
+        timeOffset = p.timeOffset
+        let rid = nextRequestId()
+        loadRequestId = rid
         awaitingLoad = true
         endReported = false
         firstNewMediaSessionId = maxSeenMediaSessionId + 1
         var media: [String: Any] = [
-            "contentId": url,
-            "contentType": pendingContentType,
-            "streamType": "BUFFERED"
+            "contentId": p.url,
+            "contentType": p.contentType,
+            "streamType": "BUFFERED",
+            // How a later join (after the phone slept) recognises this media and reads its
+            // positions: the receiver hands customData back in its statuses.
+            "customData": ["itemId": itemId, "timeOffset": p.timeOffset]
         ]
-        if let meta = pendingMetadata { media["metadata"] = meta }
+        if let meta = metadata { media["metadata"] = meta }
         let payload: [String: Any] = [
             "type": "LOAD",
-            "requestId": requestId,
-            "autoplay": pendingAutoplay,
-            "currentTime": pendingStartTime,
+            "requestId": rid,
+            "autoplay": p.autoplay,
+            "currentTime": p.startTime,
             "media": media
         ]
-        enqueue(namespace: CastNS.media, destination: transport, json: payload)
-        report("loading media")
+        send(CastNS.media, to: transport, payload)
+        emit(.state("loading media"))
     }
 
     private func sendMedia(_ base: [String: Any]) {
         guard let tid = transportId, let msid = mediaSessionId else { return }
         var json = base
         json["mediaSessionId"] = msid
-        requestId += 1
-        json["requestId"] = requestId
-        enqueue(namespace: CastNS.media, destination: tid, json: json)
+        json["requestId"] = nextRequestId()
+        send(CastNS.media, to: tid, json)
     }
 
-    // Build a CastMessage frame and queue it for the ioLoop to write.
-    private func enqueue(namespace: String, destination: String, json: [String: Any]) {
-        let payload = jsonString(json)
+    private func sendStopApp() {
+        if let sid = appSessionId {
+            send(CastNS.receiver, to: CastSession.platformReceiver,
+                 ["type": "STOP", "sessionId": sid, "requestId": nextRequestId()])
+        }
+        exitLost = false
+    }
+
+    private func requestReceiverStatus() {
+        send(CastNS.receiver, to: CastSession.platformReceiver,
+             ["type": "GET_STATUS", "requestId": nextRequestId()])
+    }
+
+    private func nextRequestId() -> Int {
+        requestId += 1
+        return requestId
+    }
+
+    // Write one CastMessage frame. ioLoop thread only. A write that fails means the socket
+    // is gone, which ends the loop.
+    private func send(_ namespace: String, to destination: String, _ json: [String: Any]) {
+        guard let h = handle, exitLost != true else { return }
         let msg = CastMessage(sourceId: CastSession.senderId, destinationId: destination,
-                              namespace: namespace, payloadUtf8: payload)
-        lock.lock()
-        outbound.append(msg.framed())
-        lock.unlock()
+                              namespace: namespace, payloadUtf8: jsonString(json))
+        let data = msg.framed()
+        let sent = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Int in
+            guard let base = raw.baseAddress else { return 0 }
+            return Int(curl_bridge_send(h, base, data.count))
+        }
+        if sent < 0 {
+            DebugLog.shared.log("CAST", "send failed — connection lost")
+            exitLost = true
+        }
+    }
+
+    private func emit(_ e: Event) {
+        DispatchQueue.main.async { [weak self] in self?.onEvent?(e) }
     }
 
     // MARK: - JSON helpers
@@ -448,9 +671,5 @@ final class CastSession: NSObject {
               let obj = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
         else { return nil }
         return obj
-    }
-
-    private func report(_ text: String) {
-        DispatchQueue.main.async { [weak self] in self?.onState?(text) }
     }
 }

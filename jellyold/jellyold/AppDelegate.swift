@@ -44,6 +44,14 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {
         application.beginReceivingRemoteControlEvents()
         becomeFirstResponder()
+        // The Chromecast connection rarely survives a suspension: rejoin what the TV is
+        // playing (or, on a cold launch, the cast that was on when iOS killed the app).
+        CastController.shared.appDidBecomeActive()
+    }
+
+    // Holds the cast connection for the few minutes iOS allows a backgrounded app.
+    func applicationDidEnterBackground(_ application: UIApplication) {
+        CastController.shared.appDidEnterBackground()
     }
 
     override func remoteControlReceived(with event: UIEvent?) {

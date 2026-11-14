@@ -9,13 +9,22 @@ import UIKit
 // push/pop, floats above pushed content, rotates for free, and stays clear of
 // the UIActionSheets that are shown with `show(in: view)`.
 //
-// Poll-only: it registers none of AudioPlayer's callbacks, which are
-// single-slot and belong to NowPlayingVC.
+// Poll-only: it registers none of AudioPlayer's or CastController's callbacks,
+// which are single-slot and belong to NowPlayingVC / CastVC.
+//
+// While casting it is the TV's remote instead: the item on the TV with
+// "Playing on <TV>" (or "Reconnecting…" after the phone slept), play/pause
+// acting on the TV, close stopping the cast, and a tap opening CastVC. That is
+// also the way back to a cast picked up again after iOS killed the app.
 final class MiniPlayerBar: UIView {
 
     static let barHeight: CGFloat = 60
 
     private let titleLabel = UILabel()
+    // Cast only: "Playing on Living Room TV".
+    private let statusLabel = UILabel()
+    // Whether the bar is laid out for a cast (title + status) or local audio (title).
+    private var showingCast = false
     private let playPauseBtn = UIButton(type: .custom)
     private let closeBtn = UIButton(type: .custom)
     private let openBtn = UIButton(type: .custom) // transparent tap-to-expand area
@@ -51,6 +60,15 @@ final class MiniPlayerBar: UIView {
         titleLabel.isUserInteractionEnabled = false
         addSubview(titleLabel)
 
+        statusLabel.frame = CGRect(x: 14, y: 31, width: bounds.width - 104, height: 18)
+        statusLabel.autoresizingMask = .flexibleWidth
+        statusLabel.backgroundColor = .clear
+        statusLabel.textColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1)
+        statusLabel.font = UIFont.systemFont(ofSize: 12)
+        statusLabel.isUserInteractionEnabled = false
+        statusLabel.isHidden = true
+        addSubview(statusLabel)
+
         // Transparent button over the title area — tap to open NowPlayingVC.
         openBtn.frame = CGRect(x: 0, y: 0, width: bounds.width - 88, height: bounds.height)
         openBtn.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -83,32 +101,87 @@ final class MiniPlayerBar: UIView {
     }
 
     @objc private func poll() {
-        let item = AudioQueue.shared.current
+        let cast = CastController.shared
         let top = nav?.topViewController
+        if cast.isCasting, let item = cast.item {
+            let shouldHide = (top is CastVC) || (top is VideoPlayerVC)
+            if isHidden != shouldHide { isHidden = shouldHide }
+            guard !shouldHide else { return }
+            claimTop()
+            setCastLayout(true)
+            if titleLabel.text != item.name { titleLabel.text = item.name }
+            let status = cast.statusText
+            if statusLabel.text != status { statusLabel.text = status }
+            // A photo has nothing to play or pause; nothing can be commanded while reconnecting.
+            let hidePlay = cast.kind == .photo
+            if playPauseBtn.isHidden != hidePlay { playPauseBtn.isHidden = hidePlay }
+            let live = !cast.isReconnecting
+            if playPauseBtn.isEnabled != live { playPauseBtn.isEnabled = live }
+            let wantSelected = !cast.isPlaying
+            if playPauseBtn.isSelected != wantSelected { playPauseBtn.isSelected = wantSelected }
+            return
+        }
+
+        let item = AudioQueue.shared.current
         let shouldHide = (item == nil) || (top is NowPlayingVC) || (top is VideoPlayerVC)
         if isHidden != shouldHide { isHidden = shouldHide }
         guard let item = item, !shouldHide else { return }
-        // A pushed view controller's view is added above us, so claim the top
-        // slot back. Compared first — bringSubviewToFront forces a layout pass.
-        if let navView = nav?.view, navView.subviews.last !== self {
-            navView.bringSubviewToFront(self)
-        }
+        claimTop()
+        setCastLayout(false)
         if titleLabel.text != item.name { titleLabel.text = item.name }
+        if playPauseBtn.isHidden { playPauseBtn.isHidden = false }
+        if !playPauseBtn.isEnabled { playPauseBtn.isEnabled = true }
         let wantSelected = !AudioPlayer.shared.isPlaying
         if playPauseBtn.isSelected != wantSelected { playPauseBtn.isSelected = wantSelected }
     }
 
-    @objc private func playPauseTapped() {
-        AudioPlayer.shared.togglePlayPause()
+    // A pushed view controller's view is added above us, so claim the top
+    // slot back. Compared first — bringSubviewToFront forces a layout pass.
+    private func claimTop() {
+        if let navView = nav?.view, navView.subviews.last !== self {
+            navView.bringSubviewToFront(self)
+        }
     }
 
+    // Cast: one-line title over the status line. Audio: a two-line title. Only
+    // touched when the mode flips — the poll runs twice a second.
+    private func setCastLayout(_ cast: Bool) {
+        guard cast != showingCast else { return }
+        showingCast = cast
+        statusLabel.isHidden = !cast
+        titleLabel.numberOfLines = cast ? 1 : 2
+        var f = titleLabel.frame
+        f.origin.y = cast ? 11 : 8
+        f.size.height = cast ? 20 : 44
+        titleLabel.frame = f
+    }
+
+    @objc private func playPauseTapped() {
+        if CastController.shared.isCasting {
+            CastController.shared.togglePlayPause()
+        } else {
+            AudioPlayer.shared.togglePlayPause()
+        }
+    }
+
+    // While casting, close stops the cast (the TV goes back to its own screen).
     @objc private func closeTapped() {
-        AudioPlayer.shared.stopAll()
+        if CastController.shared.isCasting {
+            CastController.shared.stop()
+        } else {
+            AudioPlayer.shared.stopAll()
+        }
         isHidden = true
     }
 
     @objc private func openTapped() {
-        guard let nav = nav, !(nav.topViewController is NowPlayingVC) else { return }
+        guard let nav = nav else { return }
+        if CastController.shared.isCasting {
+            guard !(nav.topViewController is CastVC) else { return }
+            nav.pushViewController(CastVC(), animated: true)
+            return
+        }
+        guard !(nav.topViewController is NowPlayingVC) else { return }
         nav.pushViewController(NowPlayingVC(), animated: true)
     }
 }

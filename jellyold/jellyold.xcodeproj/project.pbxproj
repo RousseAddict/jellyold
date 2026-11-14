@@ -76,6 +76,8 @@
 		BB240020 /* queue@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB24001F /* queue@2x.png */; };
 		BB240022 /* cast-bar.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240021 /* cast-bar.png */; };
 		BB240024 /* cast-bar@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB240023 /* cast-bar@2x.png */; };
+		BB270002 /* volume.png in Resources */ = {isa = PBXBuildFile; fileRef = BB270001 /* volume.png */; };
+		BB270004 /* volume@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = BB270003 /* volume@2x.png */; };
 		BB250002 /* PlaybackReporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB250001 /* PlaybackReporter.swift */; };
 		BB260002 /* ItemRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB260001 /* ItemRouter.swift */; };
 		BB260004 /* HomeVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB260003 /* HomeVC.swift */; };
@@ -172,6 +174,8 @@
 		BB24001F /* queue@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "queue@2x.png"; sourceTree = "<group>"; };
 		BB240021 /* cast-bar.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast-bar.png"; sourceTree = "<group>"; };
 		BB240023 /* cast-bar@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "cast-bar@2x.png"; sourceTree = "<group>"; };
+		BB270001 /* volume.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = volume.png; sourceTree = "<group>"; };
+		BB270003 /* volume@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "volume@2x.png"; sourceTree = "<group>"; };
 		BB250001 /* PlaybackReporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackReporter.swift; sourceTree = "<group>"; };
 		BB260001 /* ItemRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemRouter.swift; sourceTree = "<group>"; };
 		BB260003 /* HomeVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeVC.swift; sourceTree = "<group>"; };
@@ -281,6 +285,8 @@
 				BB24001F /* queue@2x.png */,
 				BB240021 /* cast-bar.png */,
 				BB240023 /* cast-bar@2x.png */,
+				BB270001 /* volume.png */,
+				BB270003 /* volume@2x.png */,
 				BB210027 /* x@2x.png */,
 				BB210025 /* x.png */,
 				BB210023 /* skip-forward@2x.png */,
@@ -436,6 +442,8 @@
 				BB240020 /* queue@2x.png in Resources */,
 				BB240022 /* cast-bar.png in Resources */,
 				BB240024 /* cast-bar@2x.png in Resources */,
+				BB270002 /* volume.png in Resources */,
+				BB270004 /* volume@2x.png in Resources */,
 				BB210028 /* x@2x.png in Resources */,
 				BB210026 /* x.png in Resources */,
 				BB210024 /* skip-forward@2x.png in Resources */,
