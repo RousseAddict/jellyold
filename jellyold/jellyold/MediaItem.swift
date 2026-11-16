@@ -58,6 +58,15 @@ struct MediaItem {
         return artists.joined(separator: ", ")
     }
 
+    // 0...1, how far into it the server says this user got — a card's progress bar.
+    // Not started, or finished (Jellyfin clears the position), gives 0 or nil: no bar.
+    var progressFraction: Double? {
+        if let f = playState?.playedFraction { return f }
+        guard let duration = durationSeconds, duration > 0,
+              let position = playState?.positionSeconds else { return nil }
+        return min(1, position / duration)
+    }
+
     // MARK: - Card images
     //
     // Sized for a card (maxWidth in pixels), and only of a picture the server says exists

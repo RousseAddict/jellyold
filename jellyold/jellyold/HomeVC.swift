@@ -266,7 +266,7 @@ final class HomeVC: UITableViewController {
                                  subtitle: isEpisode ? HomeVC.episodeLine(item)
                                                      : (HomeVC.timeLeft(item) ?? HomeVC.yearText(item)),
                                  imageURL: item.landscapeImageURL(maxWidth: px),
-                                 progress: HomeVC.progress(item))
+                                 progress: item.progressFraction)
             }
         case .nextUp:
             return shelf.items.map { item in
@@ -307,13 +307,6 @@ final class HomeVC: UITableViewController {
         let minutes = Int((duration - position) / 60 + 0.5)
         guard minutes > 0 else { return nil }
         return minutes < 60 ? "\(minutes) min left" : "\(minutes / 60) h \(minutes % 60) min left"
-    }
-
-    private static func progress(_ item: MediaItem) -> Double? {
-        if let f = item.playState?.playedFraction { return f }
-        guard let duration = item.durationSeconds, duration > 0,
-              let position = item.playState?.positionSeconds else { return nil }
-        return min(1, position / duration)
     }
 
     // MARK: - Table

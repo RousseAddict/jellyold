@@ -29,6 +29,10 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     private lazy var failedView = EmptyStateView.loadFailed { [weak self] in self?.fetchItems() }
     private var items: [MediaItem] = []
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
+    private var grid: CardGrid
+    private var laidOutWidth: CGFloat = 0
+    // Room for the year under every card once any card has one, so the rows line up.
+    private var hasYears = false
 
     private var currentSortIndex: Int = 0
     private var sortKey: String { "sortIndex_\(library.collectionType.isEmpty ? "default" : library.collectionType)" }
@@ -62,9 +66,26 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
     init(library: Library, sortByDateAdded: Bool = false) {
         self.library = library
         self.sortByDateAdded = sortByDateAdded
+        self.grid = CardGrid(style: ItemListVC.cardStyle(for: library.collectionType, items: []))
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    // Picture shape, as on Home: square for music, playlists, photos and home videos,
+    // 2:3 posters otherwise. A drilled-into folder can be either (a show's unparsed
+    // subfolder, or a photo album), so once loaded its pictures' own shapes decide.
+    private static func cardStyle(for collectionType: String, items: [MediaItem]) -> ShelfStyle {
+        switch collectionType {
+        case "music", "musicArtist", "playlists", "homevideos", "photos":
+            return .square
+        case "folder":
+            let aspects = items.compactMap { $0.images.primaryAspect }
+            let tall = aspects.filter { $0 < 0.85 }.count
+            return aspects.isEmpty || tall * 2 >= aspects.count ? .poster : .square
+        default:
+            return .poster
+        }
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -85,17 +106,22 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
         fetchItems()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        grid.relayout(collectionView, width: view.bounds.width, lastWidth: &laidOutWidth)
+    }
+
     private func setupCollectionView() {
         let layout = UICollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = 8
-        layout.minimumLineSpacing = 8
-        layout.sectionInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        grid.apply(to: layout)
+        // Track and playlist rows have no text under them to keep apart.
+        if useListDisplay { layout.minimumLineSpacing = grid.gap }
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = bgColor
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(PosterCell.self,  forCellWithReuseIdentifier: "PosterCell")
+        collectionView.register(ShelfCardCell.self, forCellWithReuseIdentifier: "Card")
         collectionView.register(EpisodeCell.self, forCellWithReuseIdentifier: "EpisodeCell")
         // Room for MiniPlayerBar, which floats over the nav controller's view.
         collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
@@ -227,7 +253,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             sortParams = "&SortBy=ProductionYear&SortOrder=Descending"
         }
 
-        let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(library.id)&Recursive=\(recursive)\(typeFilter)\(sortParams)&Fields=Overview,ProductionYear,IndexNumber,Artists,Album&Limit=300"
+        let url = "\(serverURL)/Users/\(userId)/Items?ParentId=\(library.id)&Recursive=\(recursive)\(typeFilter)\(sortParams)&Fields=Overview,ProductionYear,IndexNumber,Artists,Album,PrimaryImageAspectRatio&Limit=300"
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { [weak self] data, error in
             self?.handleItemsResponse(data: data, error: error)
         }
@@ -242,6 +268,9 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             showFailed("The server's reply couldn't be read."); return
         }
         items = its.compactMap { MediaItem(json: $0) }
+        hasYears = items.contains { $0.year != nil }
+        let style = ItemListVC.cardStyle(for: library.collectionType, items: items)
+        if style != grid.style { grid = CardGrid(style: style) }
         emptyView.isHidden = !items.isEmpty
         collectionView.reloadData()
     }
@@ -267,9 +296,11 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             configureListCell(cell, item: item)
             return cell
         } else {
-            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "PosterCell", for: indexPath) as! PosterCell
-            let imageURL = JellyfinServer.serverURL.map { "\($0)/Items/\(item.id)/Images/Primary?width=300" }
-            cell.configure(name: item.name, imageURL: imageURL)
+            let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "Card", for: indexPath) as! ShelfCardCell
+            let card = ShelfCard(title: item.name, subtitle: item.year.map { String($0) },
+                                 imageURL: item.posterImageURL(maxWidth: grid.imagePixelWidth),
+                                 progress: item.progressFraction)
+            cell.configure(card, imageHeight: grid.imageHeight(in: collectionView.bounds.width))
             return cell
         }
     }
@@ -293,10 +324,9 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
 
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
         if useListDisplay {
-            return CGSize(width: collectionView.bounds.width - 16, height: 90)
+            return CGSize(width: grid.rowWidth(in: collectionView.bounds.width), height: 90)
         }
-        let side = floor((collectionView.bounds.width - 32) / 3)
-        return CGSize(width: side, height: side * 1.5)
+        return grid.cardSize(in: collectionView.bounds.width, hasSubtitle: hasYears)
     }
 
     // MARK: - Selection

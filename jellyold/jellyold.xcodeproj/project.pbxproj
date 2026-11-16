@@ -21,7 +21,7 @@
 		BB110002 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110001 /* Library.swift */; };
 		BB110004 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110003 /* MediaItem.swift */; };
 		BB110006 /* AsyncImageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110005 /* AsyncImageView.swift */; };
-		BB110008 /* PosterCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110007 /* PosterCell.swift */; };
+		BB110008 /* CardGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110007 /* CardGrid.swift */; };
 		BB11000A /* LibraryListVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB110009 /* LibraryListVC.swift */; };
 		BB11000C /* ItemListVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB11000B /* ItemListVC.swift */; };
 		BB120002 /* ItemDetailVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB120001 /* ItemDetailVC.swift */; };
@@ -119,7 +119,7 @@
 		BB110001 /* Library.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Library.swift; sourceTree = "<group>"; };
 		BB110003 /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
 		BB110005 /* AsyncImageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AsyncImageView.swift; sourceTree = "<group>"; };
-		BB110007 /* PosterCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PosterCell.swift; sourceTree = "<group>"; };
+		BB110007 /* CardGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardGrid.swift; sourceTree = "<group>"; };
 		BB110009 /* LibraryListVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryListVC.swift; sourceTree = "<group>"; };
 		BB11000B /* ItemListVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemListVC.swift; sourceTree = "<group>"; };
 		BB120001 /* ItemDetailVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemDetailVC.swift; sourceTree = "<group>"; };
@@ -240,7 +240,7 @@
 				BB110001 /* Library.swift */,
 				BB110003 /* MediaItem.swift */,
 				BB110005 /* AsyncImageView.swift */,
-				BB110007 /* PosterCell.swift */,
+				BB110007 /* CardGrid.swift */,
 				BB110009 /* LibraryListVC.swift */,
 				BB11000B /* ItemListVC.swift */,
 				BB120001 /* ItemDetailVC.swift */,
@@ -490,7 +490,7 @@
 				BB110002 /* Library.swift in Sources */,
 				BB110004 /* MediaItem.swift in Sources */,
 				BB110006 /* AsyncImageView.swift in Sources */,
-				BB110008 /* PosterCell.swift in Sources */,
+				BB110008 /* CardGrid.swift in Sources */,
 				BB11000A /* LibraryListVC.swift in Sources */,
 				BB11000C /* ItemListVC.swift in Sources */,
 				BB120002 /* ItemDetailVC.swift in Sources */,

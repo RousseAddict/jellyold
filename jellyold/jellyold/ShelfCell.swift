@@ -35,16 +35,13 @@ final class ShelfCell: UITableViewCell, UICollectionViewDataSource, UICollection
     private static let bottomGap: CGFloat = 12
     private static let sideInset: CGFloat = 12
     private static let cardGap: CGFloat = 8
-    private static let titleGap: CGFloat = 4
-    private static let titleHeight: CGFloat = 16
-    private static let subtitleHeight: CGFloat = 14
 
     static func height(style: ShelfStyle, hasSubtitles: Bool) -> CGFloat {
         return headerHeight + cardHeight(style, hasSubtitles) + bottomGap
     }
 
     private static func cardHeight(_ style: ShelfStyle, _ hasSubtitles: Bool) -> CGFloat {
-        return style.imageSize.height + titleGap + titleHeight + (hasSubtitles ? subtitleHeight : 0)
+        return ShelfCardCell.height(imageHeight: style.imageSize.height, hasSubtitle: hasSubtitles)
     }
 
     var onSelect: ((Int) -> Void)?
@@ -177,9 +174,19 @@ final class ShelfCell: UITableViewCell, UICollectionViewDataSource, UICollection
 //
 // Picture on top, title and an optional second line underneath. Until the picture
 // arrives (or when the server has none) the title shows inside the grey box, so a card
-// is never just an empty rectangle.
+// is never just an empty rectangle. Also the card of the library grids (CardGrid).
 
 final class ShelfCardCell: UICollectionViewCell {
+
+    private static let titleGap: CGFloat = 4
+    private static let titleHeight: CGFloat = 16
+    private static let subtitleHeight: CGFloat = 14
+
+    // Picture plus the text under it; the second line's room is kept for every card of
+    // a row or grid once any of them has one, so the cards line up.
+    static func height(imageHeight: CGFloat, hasSubtitle: Bool) -> CGFloat {
+        return imageHeight + titleGap + titleHeight + (hasSubtitle ? subtitleHeight : 0)
+    }
 
     private let imageBox = UIView()
     private let placeholder = UILabel()
@@ -248,8 +255,10 @@ final class ShelfCardCell: UICollectionViewCell {
         let barH: CGFloat = 3
         progressTrack.frame = CGRect(x: 0, y: imageHeight - barH, width: w, height: barH)
         progressFill.frame = CGRect(x: 0, y: 0, width: floor(w * CGFloat(min(1, max(0, progress ?? 0)))), height: barH)
-        titleLabel.frame = CGRect(x: 0, y: imageHeight + 4, width: w, height: 16)
-        subtitleLabel.frame = CGRect(x: 0, y: imageHeight + 20, width: w, height: 14)
+        let titleY = imageHeight + ShelfCardCell.titleGap
+        titleLabel.frame = CGRect(x: 0, y: titleY, width: w, height: ShelfCardCell.titleHeight)
+        subtitleLabel.frame = CGRect(x: 0, y: titleY + ShelfCardCell.titleHeight,
+                                     width: w, height: ShelfCardCell.subtitleHeight)
     }
 
     override func prepareForReuse() {

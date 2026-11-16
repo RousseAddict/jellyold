@@ -7,6 +7,9 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
     private var collectionView: UICollectionView!
     private var spinner: UIActivityIndicatorView!
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
+    private let grid = CardGrid(style: .poster, large: true)
+    private var laidOutWidth: CGFloat = 0
+    private var hasYears = false
 
     private lazy var emptyView = EmptyStateView(mark: .folder, title: "No seasons",
                                                 body: "Jellyfin hasn't found any episodes of this show yet.")
@@ -31,6 +34,11 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
         fetchSeasons()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        grid.relayout(collectionView, width: view.bounds.width, lastWidth: &laidOutWidth)
+    }
+
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         viewHasAppeared = true
@@ -49,15 +57,13 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
 
     private func setupCollectionView() {
         let layout = UICollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = 10
-        layout.minimumLineSpacing = 10
-        layout.sectionInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        grid.apply(to: layout)
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = bgColor
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(PosterCell.self, forCellWithReuseIdentifier: "PosterCell")
+        collectionView.register(ShelfCardCell.self, forCellWithReuseIdentifier: "Card")
         view.addSubview(collectionView)
         for v in [emptyView, failedView] {
             v.frame = CGRect(x: 0, y: 0, width: collectionView.bounds.width, height: collectionView.bounds.height)
@@ -90,6 +96,7 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
                 self.showFailed("The server's reply couldn't be read."); return
             }
             self.seasons = items.compactMap { MediaItem(json: $0) }
+            self.hasYears = self.seasons.contains { $0.year != nil }
             if self.seasons.count == 1 {
                 self.pendingSingleSeason = self.seasons[0]
                 self.trySkipIfSingleSeason()  // fires if viewDidAppear already ran
@@ -108,15 +115,17 @@ class SeasonListVC: UIViewController, UICollectionViewDataSource, UICollectionVi
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { seasons.count }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "PosterCell", for: indexPath) as! PosterCell
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "Card", for: indexPath) as! ShelfCardCell
         let season = seasons[indexPath.item]
-        cell.configure(name: season.name, imageURL: JellyfinServer.serverURL.map { "\($0)/Items/\(season.id)/Images/Primary?width=300" })
+        let card = ShelfCard(title: season.name, subtitle: season.year.map { String($0) },
+                             imageURL: MediaItem.imageURL(itemId: season.id, type: "Primary", maxWidth: grid.imagePixelWidth),
+                             progress: nil)
+        cell.configure(card, imageHeight: grid.imageHeight(in: collectionView.bounds.width))
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        let side = floor((collectionView.bounds.width - 30) / 2)
-        return CGSize(width: side, height: side * 1.5)
+        return grid.cardSize(in: collectionView.bounds.width, hasSubtitle: hasYears)
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {

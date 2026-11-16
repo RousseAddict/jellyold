@@ -6,6 +6,9 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     private var spinner: UIActivityIndicatorView!
     private var libraries: [Library] = []
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
+    // 16:9, like Home's Libraries row: a library's picture is wide art.
+    private let grid = CardGrid(style: .landscape)
+    private var laidOutWidth: CGFloat = 0
 
     private lazy var emptyView = EmptyStateView(mark: .folder, title: "No libraries",
                                                 body: "This account can't see any libraries yet. A Jellyfin admin can share them with it.")
@@ -22,17 +25,20 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
         fetchLibraries()
     }
 
+    override func viewWillLayoutSubviews() {
+        super.viewWillLayoutSubviews()
+        grid.relayout(collectionView, width: view.bounds.width, lastWidth: &laidOutWidth)
+    }
+
     private func setupCollectionView() {
         let layout = UICollectionViewFlowLayout()
-        layout.minimumInteritemSpacing = 10
-        layout.minimumLineSpacing = 10
-        layout.sectionInset = UIEdgeInsets(top: 10, left: 10, bottom: 10, right: 10)
+        grid.apply(to: layout)
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.backgroundColor = bgColor
         collectionView.dataSource = self
         collectionView.delegate = self
-        collectionView.register(PosterCell.self, forCellWithReuseIdentifier: "PosterCell")
+        collectionView.register(ShelfCardCell.self, forCellWithReuseIdentifier: "Card")
         // Room for MiniPlayerBar, which floats over the nav controller's view.
         collectionView.contentInset = UIEdgeInsets(top: 0, left: 0,
                                                   bottom: MiniPlayerBar.barHeight, right: 0)
@@ -76,15 +82,17 @@ class LibraryListVC: UIViewController, UICollectionViewDataSource, UICollectionV
     func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { libraries.count }
 
     func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "PosterCell", for: indexPath) as! PosterCell
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "Card", for: indexPath) as! ShelfCardCell
         let lib = libraries[indexPath.item]
-        cell.configure(name: lib.name, imageURL: JellyfinServer.serverURL.map { "\($0)/Items/\(lib.id)/Images/Primary?width=300" })
+        let card = ShelfCard(title: lib.name, subtitle: nil,
+                             imageURL: MediaItem.imageURL(itemId: lib.id, type: "Primary", maxWidth: grid.imagePixelWidth),
+                             progress: nil)
+        cell.configure(card, imageHeight: grid.imageHeight(in: collectionView.bounds.width))
         return cell
     }
 
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
-        let side = floor((collectionView.bounds.width - 30) / 2)
-        return CGSize(width: side, height: side * 1.5)
+        return grid.cardSize(in: collectionView.bounds.width, hasSubtitle: false)
     }
 
     func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
