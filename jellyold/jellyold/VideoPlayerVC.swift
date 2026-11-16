@@ -18,6 +18,8 @@ class VideoPlayerVC: UIViewController {
     // Jellyfin's view of this item as the detail page loaded it, weighed against this
     // device's own resume point (ResumeStore) to pick where playback starts.
     private let serverState: ServerPlayState?
+    // "Play from Start" on the detail page: every saved resume point is ignored.
+    private let startOver: Bool
     private var startPosition: Double = 0
     // One per playback: in the transcode URL, so the stop report also ends that ffmpeg
     // job, and in every report.
@@ -40,12 +42,14 @@ class VideoPlayerVC: UIViewController {
          audioIndex: Int? = nil,
          subtitleIndex: Int? = nil,
          forceTranscode: Bool = false,
-         serverState: ServerPlayState? = nil) {
+         serverState: ServerPlayState? = nil,
+         startOver: Bool = false) {
         self.item = item
         self.selectedAudioIndex = audioIndex
         self.selectedSubtitleIndex = subtitleIndex
         self.forceTranscode = forceTranscode
         self.serverState = serverState
+        self.startOver = startOver
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -60,7 +64,7 @@ class VideoPlayerVC: UIViewController {
         // session at the same time.
         AudioPlayer.shared.pause()
         activateAudioSession()
-        startPosition = ResumeStore.startPosition(for: item.id, server: serverState)
+        startPosition = startOver ? 0 : ResumeStore.startPosition(for: item.id, server: serverState)
         if isAudio { setupArtwork() }
         setupPlayer()
         setupBufferSpinner()

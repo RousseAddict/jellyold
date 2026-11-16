@@ -109,35 +109,24 @@ class JellyfinAPI {
 
     // MARK: - Media Info (streams + file metadata)
 
-    // Single round trip to /Users/{userId}/Items/{itemId}, used for the audio/subtitle
-    // track pickers (MediaStreams), the detail page's file-metadata section (size/date/
-    // container/codec) and the server's resume point (UserData) — the same response
-    // already carries all of it.
+    // Single round trip to /Users/{userId}/Items/{itemId}, which carries everything the
+    // detail page shows beyond the list item: the full item (overview, every image), the
+    // details only this call returns (genres, rating, people), the track pickers'
+    // MediaStreams, the file facts and the server's resume point (UserData).
     static func getMediaInfo(itemId: String, completion: @escaping ([MediaStream], MediaFileInfo) -> Void) {
-        let empty = MediaFileInfo(sizeBytes: nil, dateCreated: nil, container: nil, videoCodec: nil, playState: nil)
         guard let serverURL = JellyfinServer.serverURL,
-              let userId = JellyfinServer.userId else { completion([], empty); return }
+              let userId = JellyfinServer.userId else { completion([], MediaFileInfo()); return }
         let url = "\(serverURL)/Users/\(userId)/Items/\(itemId)"
         HTTPClient.get(url: url, headers: ["Authorization": JellyfinServer.authHeader()]) { data, _ in
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                completion([], empty); return
+                completion([], MediaFileInfo()); return
             }
             let sources = json["MediaSources"] as? [[String: Any]]
             let first = sources?.first
             let streamsJSON = first?["MediaStreams"] as? [[String: Any]] ?? []
             let streams = streamsJSON.compactMap { MediaStream(json: $0) }
-
-            // NSNumber path: numeric `as? Int64` silently fails on the iOS 6 5.1.5 runtime.
-            let sizeBytes = (first?["Size"] as? NSNumber)?.int64Value
-            let container = (first?["Container"] as? String)?.components(separatedBy: ",").first
-            let videoCodec = streamsJSON.first { ($0["Type"] as? String) == "Video" }?["Codec"] as? String
-            let dateCreated = (json["DateCreated"] as? String).flatMap(parseServerDate)
-            let playState = ServerPlayState(userData: json["UserData"] as? [String: Any])
-
-            completion(streams, MediaFileInfo(sizeBytes: sizeBytes, dateCreated: dateCreated,
-                                               container: container, videoCodec: videoCodec,
-                                               playState: playState))
+            completion(streams, MediaFileInfo(json: json, source: first, streams: streamsJSON))
         }
     }
 
@@ -155,11 +144,53 @@ class JellyfinAPI {
 }
 
 // MARK: - MediaFileInfo
+//
+// Every field optional or empty: a failed fetch leaves the detail page with what the
+// list item had.
 
 struct MediaFileInfo {
-    let sizeBytes: Int64?
-    let dateCreated: Date?
-    let container: String?
-    let videoCodec: String?
-    let playState: ServerPlayState?
+    var item: MediaItem? = nil          // the full item, as the server has it now
+    var sizeBytes: Int64? = nil
+    var dateCreated: Date? = nil
+    var container: String? = nil
+    var videoCodec: String? = nil
+    var videoWidth: Int? = nil
+    var videoHeight: Int? = nil
+    var audioCodec: String? = nil       // the default audio track's
+    var audioChannels: Int? = nil
+    var playState: ServerPlayState? = nil
+    var genres: [String] = []
+    var officialRating: String? = nil   // "PG-13", "TV-14"
+    var communityRating: Double? = nil  // 0...10
+    var directors: [String] = []
+    var cast: [String] = []             // actors, then an episode's guest stars
+}
+
+extension MediaFileInfo {
+    // `source` is the first MediaSource, `streams` its MediaStreams.
+    // NSNumber path throughout: numeric/Bool `as?` silently fails on the iOS 6 5.1.5 runtime.
+    init(json: [String: Any], source: [String: Any]?, streams: [[String: Any]]) {
+        item = MediaItem(json: json)
+        sizeBytes = (source?["Size"] as? NSNumber)?.int64Value
+        container = (source?["Container"] as? String)?.components(separatedBy: ",").first
+        dateCreated = (json["DateCreated"] as? String).flatMap(JellyfinAPI.parseServerDate)
+        playState = ServerPlayState(userData: json["UserData"] as? [String: Any])
+
+        let video = streams.first { ($0["Type"] as? String) == "Video" }
+        videoCodec = video?["Codec"] as? String
+        videoWidth = (video?["Width"] as? NSNumber)?.intValue
+        videoHeight = (video?["Height"] as? NSNumber)?.intValue
+        let audios = streams.filter { ($0["Type"] as? String) == "Audio" }
+        let audio = audios.first { ($0["IsDefault"] as? NSNumber)?.boolValue == true } ?? audios.first
+        audioCodec = audio?["Codec"] as? String
+        audioChannels = (audio?["Channels"] as? NSNumber)?.intValue
+
+        genres = json["Genres"] as? [String] ?? []
+        officialRating = json["OfficialRating"] as? String
+        communityRating = (json["CommunityRating"] as? NSNumber)?.doubleValue
+        let people = json["People"] as? [[String: Any]] ?? []
+        directors = people.filter { ($0["Type"] as? String) == "Director" }.compactMap { $0["Name"] as? String }
+        cast = people.filter { ($0["Type"] as? String) == "Actor" }.compactMap { $0["Name"] as? String }
+            + people.filter { ($0["Type"] as? String) == "GuestStar" }.compactMap { $0["Name"] as? String }
+    }
 }

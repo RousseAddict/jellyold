@@ -48,13 +48,20 @@ class ItemDetailVC: UIViewController {
     private let accentColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1.0)
     private var scrollView: UIScrollView!
     private var lastBuiltWidth: CGFloat = 0
+    private var hasAppeared = false
 
     private var mediaStreams: [MediaStream] = []
     private var selectedAudioIndex: Int?
     private var defaultAudioIndex: Int?     // the server-reported default, for the "Original" check
     private var selectedSubtitleIndex: Int?
-    private var forceTranscode = false
     private var fileInfo: MediaFileInfo?
+
+    // Jellyfin only applies a track choice in a full transcode (a remux keeps the file's
+    // default tracks), so choosing one is what turns it on.
+    private var forceTranscode: Bool {
+        return selectedSubtitleIndex != nil
+            || (selectedAudioIndex != nil && selectedAudioIndex != defaultAudioIndex)
+    }
 
     private var downloadBtn: UIButton?
     private var downloadPollTimer: Timer?
@@ -79,6 +86,10 @@ class ItemDetailVC: UIViewController {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         title = item.name
@@ -90,15 +101,24 @@ class ItemDetailVC: UIViewController {
         scrollView.contentInset = UIEdgeInsets(top: 0, left: 0,
                                               bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(scrollView)
+        // Back from playing it: the server now has a new resume point, or marked it watched.
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackReported),
+                                               name: PlaybackReporter.didStopNotification, object: nil)
+        loadInfo()
+    }
 
-        // Fetched for every item type (including Audio) — the file-metadata section at the
-        // bottom of the page needs size/date/container regardless of media type, even though
-        // the audio/subtitle track pickers above it only apply to video.
+    // The full item: details the list didn't carry (genres, credits, rating, every image),
+    // the file's tracks and facts, and the server's current resume point. Fetched for every
+    // item type, Audio included — the file facts at the bottom apply to it too.
+    private func loadInfo() {
         JellyfinAPI.getMediaInfo(itemId: item.id) { [weak self] streams, info in
             guard let self = self else { return }
+            // A failed refresh keeps the page as it was.
+            if self.fileInfo != nil && info.item == nil { return }
             self.mediaStreams = streams
             self.fileInfo = info
-            if self.item.type != "Audio" {
+            // Only the first time: a refresh after playback keeps the tracks chosen here.
+            if self.item.type != "Audio" && self.defaultAudioIndex == nil {
                 let audioStreams = streams.filter { $0.isAudio }
                 if let def = audioStreams.first(where: { $0.isDefault }) ?? audioStreams.first {
                     self.selectedAudioIndex = def.index
@@ -109,6 +129,10 @@ class ItemDetailVC: UIViewController {
         }
     }
 
+    @objc private func playbackReported() {
+        DispatchQueue.main.async { [weak self] in self?.loadInfo() }
+    }
+
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         // A download started from here may still be running after navigating away and
@@ -116,6 +140,9 @@ class ItemDetailVC: UIViewController {
         if DownloadManager.isDownloading(item.id) {
             startDownloadPoll()
         }
+        // Back from the player: the local resume point moved before the server hears of it.
+        if hasAppeared { forceRebuild() }
+        hasAppeared = true
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -139,77 +166,180 @@ class ItemDetailVC: UIViewController {
         view.layoutIfNeeded()
     }
 
+    // MARK: - Layout
+    //
+    // Narrow screens (a portrait iPhone) get a compact header — a small picture with the
+    // title beside it, or a wide still above it — so Play is on screen without scrolling.
+    // From 480pt (iPhone landscape, iPad) the picture gets a column of its own and the
+    // text a column capped at a readable width, the pair centred. A blurred backdrop sits
+    // behind the header. Everything is frames, rebuilt when the width or content changes.
+
+    private var pictureStyle: ShelfStyle {
+        switch item.type {
+        case "Episode", "Video", "MusicVideo", "Trailer": return .landscape
+        case "Audio", "MusicAlbum":                     return .square
+        default:                                        return .poster
+        }
+    }
+
     private func buildContent(width w: CGFloat) {
-        let posterW: CGFloat = min(w - 80, 220)
-        let posterH: CGFloat = posterW * 1.5
-        let posterX = (w - posterW) / 2
-        var y: CGFloat = 24
+        let shown = fileInfo?.item ?? item
+        let pad = UIDevice.current.userInterfaceIdiom == .pad
+        let wide = w >= 480
+        let style = pictureStyle
+        let aspect = style.imageSize.height / style.imageSize.width
 
-        let poster = AsyncImageView(frame: CGRect(x: posterX, y: y, width: posterW, height: posterH))
-        poster.contentMode = .scaleAspectFill
-        poster.clipsToBounds = true
-        poster.layer.cornerRadius = 8
-        poster.backgroundColor = UIColor(white: 0.15, alpha: 1.0)
-        if let serverURL = JellyfinServer.serverURL {
-            poster.load(url: "\(serverURL)/Items/\(item.id)/Images/Primary?width=400")
-        }
-        scrollView.addSubview(poster)
-        y += posterH + 20
-
-        let titleLabel = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 0))
-        titleLabel.text = item.name
-        titleLabel.textColor = .white
-        titleLabel.backgroundColor = .clear
-        titleLabel.font = UIFont.boldSystemFont(ofSize: 22)
-        titleLabel.textAlignment = .center
-        titleLabel.numberOfLines = 0
-        titleLabel.sizeToFit()
-        titleLabel.frame = CGRect(x: 16, y: y, width: w - 32, height: titleLabel.frame.height)
-        scrollView.addSubview(titleLabel)
-        y += titleLabel.frame.height + 6
-
-        if let year = item.year {
-            let yearLabel = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 20))
-            yearLabel.text = "\(year)  ·  \(item.type)"
-            yearLabel.textColor = UIColor.lightGray
-            yearLabel.backgroundColor = .clear
-            yearLabel.font = UIFont.systemFont(ofSize: 14)
-            yearLabel.textAlignment = .center
-            scrollView.addSubview(yearLabel)
-            y += 28
-        }
-
-        if let overview = item.overview, !overview.isEmpty {
-            let overviewLabel = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 0))
-            overviewLabel.text = overview
-            overviewLabel.textColor = UIColor(white: 0.8, alpha: 1.0)
-            overviewLabel.backgroundColor = .clear
-            overviewLabel.font = UIFont.systemFont(ofSize: 14)
-            overviewLabel.numberOfLines = 0
-            overviewLabel.sizeToFit()
-            overviewLabel.frame = CGRect(x: 16, y: y, width: w - 32, height: overviewLabel.frame.height)
-            scrollView.addSubview(overviewLabel)
-            y += overviewLabel.frame.height + 24
+        // Picture frame, then where the header text and the rest of the page go.
+        let pic: CGRect
+        let textX: CGFloat, textW: CGFloat, textY: CGFloat
+        if wide {
+            let margin: CGFloat = pad ? 32 : 16
+            let gap: CGFloat = pad ? 28 : 16
+            let picW: CGFloat
+            switch style {
+            case .poster:    picW = pad ? 240 : 130
+            case .square:    picW = pad ? 240 : 150
+            case .landscape: picW = pad ? 320 : 180
+            }
+            textW = min(w - margin * 2 - picW - gap, 600)
+            let left = floor((w - (picW + gap + textW)) / 2)
+            pic = CGRect(x: left, y: 24, width: picW, height: floor(picW * aspect))
+            textX = left + picW + gap
+            textY = pic.minY
+        } else if style == .landscape {
+            pic = CGRect(x: 16, y: 16, width: w - 32, height: floor((w - 32) * aspect))
+            textX = 16; textW = w - 32
+            textY = pic.maxY + 12
         } else {
-            y += 8
+            let picW: CGFloat = style == .square ? 120 : 100
+            pic = CGRect(x: 16, y: 16, width: picW, height: floor(picW * aspect))
+            textX = pic.maxX + 12; textW = w - textX - 16
+            textY = pic.minY
         }
 
-        // Play shares its row with the cast button. Photos never reach this screen,
-        // so everything that gets here is castable.
+        let picture = AsyncImageView(frame: pic)
+        picture.contentMode = .scaleAspectFill
+        picture.clipsToBounds = true
+        picture.layer.cornerRadius = pad ? 8 : 6
+        picture.backgroundColor = UIColor(white: 0.15, alpha: 1.0)
+        // Rounded up to 100 px, so a rotation that nudges the size reuses the cached one.
+        let px = Int(ceil(pic.width * UIScreen.main.scale / 100) * 100)
+        if let url = style == .landscape ? shown.landscapeImageURL(maxWidth: px)
+                                         : shown.posterImageURL(maxWidth: px) {
+            picture.load(url: url)
+        }
+        scrollView.addSubview(picture)
+
+        // Header: show, title, facts, genres.
+        var y = textY
+        if shown.type == "Episode", let series = shown.seriesName {
+            y += addLabel(series, font: UIFont.systemFont(ofSize: 14), color: UIColor(white: 1, alpha: 0.7),
+                          x: textX, y: y, width: textW, lines: 1) + 2
+        }
+        let titleSize: CGFloat = wide ? (pad ? 26 : 22) : 20
+        y += addLabel(shown.name, font: UIFont.boldSystemFont(ofSize: titleSize), color: .white,
+                      x: textX, y: y, width: textW, lines: wide ? 0 : 3) + 6
+        let facts = factsLine(shown)
+        if !facts.isEmpty {
+            y += addLabel(facts, font: UIFont.systemFont(ofSize: 14), color: UIColor(white: 0.8, alpha: 1),
+                          x: textX, y: y, width: textW) + 4
+        }
+        if let genres = fileInfo?.genres, !genres.isEmpty {
+            y += addLabel(genres.prefix(3).joined(separator: " \u{00b7} "), font: UIFont.systemFont(ofSize: 13),
+                          color: UIColor(white: 1, alpha: 0.55), x: textX, y: y, width: textW) + 4
+        }
+
+        // The rest of the page: under the header on a phone, on in the text column when wide.
+        let bodyX: CGFloat, bodyW: CGFloat
+        let bandH: CGFloat
+        if wide {
+            bodyX = textX; bodyW = textW
+            y += 14
+            bandH = max(pic.minY + pic.height * 0.6, y)
+        } else {
+            bodyX = 16; bodyW = w - 32
+            y = max(y, pic.maxY) + 16
+            bandH = y
+        }
+
+        y = buildActions(shown, x: bodyX, y: y, width: bodyW)
+
+        if let overview = shown.overview, !overview.isEmpty {
+            y += addLabel(overview, font: UIFont.systemFont(ofSize: 14), color: UIColor(white: 0.8, alpha: 1),
+                          x: bodyX, y: y, width: bodyW) + 14
+        }
+        if let credits = creditsText() {
+            y += addLabel(credits, font: UIFont.systemFont(ofSize: 13), color: UIColor(white: 1, alpha: 0.55),
+                          x: bodyX, y: y, width: bodyW) + 16
+        }
+        if item.type != "Audio" {
+            y = buildTrackRows(x: bodyX, y: y, width: bodyW)
+        }
+        y = buildFileMetadata(y: y, x: bodyX, width: bodyW)
+
+        if let url = shown.backdropImageURL(maxWidth: 360) {
+            // Blurred by the server: a small download and no blur work on the device.
+            addBackdrop(url: url + "&blur=12", width: w, height: bandH)
+        }
+
+        let bottom = max(y, wide ? pic.maxY : 0) + 30
+        scrollView.contentSize = CGSize(width: w, height: bottom)
+    }
+
+    // "S02E05 · 2009 · 47 min · TV-14 · ★ 8.2"
+    private func factsLine(_ shown: MediaItem) -> String {
+        var parts: [String] = []
+        if let ep = shown.episodeLabel { parts.append(ep) }
+        if let year = shown.year { parts.append(String(year)) }
+        if let duration = shown.durationSeconds {
+            parts.append(shown.type == "Audio" ? ItemDetailVC.clock(duration) : ItemDetailVC.runtimeText(duration))
+        }
+        if let rating = fileInfo?.officialRating, !rating.isEmpty { parts.append(rating) }
+        if let score = fileInfo?.communityRating, score > 0 {
+            parts.append(String(format: "\u{2605} %.1f", score))
+        }
+        return parts.joined(separator: " \u{00b7} ")
+    }
+
+    private func creditsText() -> String? {
+        guard let info = fileInfo else { return nil }
+        var lines: [String] = []
+        if !info.directors.isEmpty {
+            lines.append("Directed by " + info.directors.prefix(2).joined(separator: ", "))
+        }
+        if !info.cast.isEmpty {
+            lines.append("With " + info.cast.prefix(4).joined(separator: ", "))
+        }
+        return lines.isEmpty ? nil : lines.joined(separator: "\n")
+    }
+
+    // Play (or Resume, with how far in) beside Cast, then a row of secondary actions:
+    // Play from Start + Download when there's a resume point, Download alone otherwise,
+    // and Play Next + Add to Queue for a track. Returns the y below them.
+    private func buildActions(_ shown: MediaItem, x: CGFloat, y startY: CGFloat, width bodyW: CGFloat) -> CGFloat {
+        var y = startY
+        let rowW = min(bodyW, 420)
+        let isAudio = item.type == "Audio"
+        // The same position the player will start from.
+        let resumeAt = isAudio ? 0 : ResumeStore.startPosition(for: item.id, server: fileInfo?.playState ?? item.playState)
+
         let castW: CGFloat = 50
         let gap: CGFloat = 8
+        let playW = rowW - castW - gap
         let playBtn = UIButton(type: .custom)
-        playBtn.frame = CGRect(x: 16, y: y, width: w - 32 - castW - gap, height: 50)
-        playBtn.setTitle("Play", for: .normal)
+        playBtn.frame = CGRect(x: x, y: y, width: playW, height: 50)
+        playBtn.setTitle(resumeAt > 0 ? "Resume " + ItemDetailVC.clock(resumeAt) : "Play", for: .normal)
         playBtn.setTitleColor(.white, for: .normal)
+        playBtn.setTitleColor(UIColor(white: 1, alpha: 0.5), for: .highlighted)
         playBtn.titleLabel?.font = UIFont.boldSystemFont(ofSize: 18)
         playBtn.backgroundColor = accentColor
         playBtn.layer.cornerRadius = 10
         playBtn.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         scrollView.addSubview(playBtn)
 
+        // Photos never reach this screen, so everything that gets here is castable.
         let cast = UIButton(type: .custom)
-        cast.frame = CGRect(x: w - 16 - castW, y: y, width: castW, height: 50)
+        cast.frame = CGRect(x: x + playW + gap, y: y, width: castW, height: 50)
         cast.setImage(UIImage(named: "cast"), for: .normal)
         cast.backgroundColor = accentColor
         cast.layer.cornerRadius = 10
@@ -224,126 +354,202 @@ class ItemDetailVC: UIViewController {
         spinner.hidesWhenStopped = true
         cast.addSubview(spinner)
         castSpinner = spinner
-        y += 50 + 12
+        y += 50
 
-        if item.type == "Audio" {
-            let playNext = makeTrackButton("Play Next", y: y, width: w)
-            playNext.addTarget(self, action: #selector(playNextTapped), for: .touchUpInside)
-            scrollView.addSubview(playNext)
-            y += 40 + 8
-
-            let addEnd = makeTrackButton("Add to Queue", y: y, width: w)
-            addEnd.addTarget(self, action: #selector(addToQueueTapped), for: .touchUpInside)
-            scrollView.addSubview(addEnd)
-            y += 40 + 20
+        if resumeAt > 0, let duration = shown.durationSeconds, duration > 0 {
+            let track = UIView(frame: CGRect(x: x + 2, y: y + 6, width: playW - 4, height: 3))
+            track.backgroundColor = UIColor(white: 1, alpha: 0.15)
+            let fill = UIView(frame: CGRect(x: 0, y: 0, width: floor(track.bounds.width * CGFloat(min(1, resumeAt / duration))),
+                                            height: 3))
+            fill.backgroundColor = accentColor
+            track.addSubview(fill)
+            scrollView.addSubview(track)
+            y += 9
         }
+        y += 10
 
-        if item.type != "Audio" {
-            let dl = UIButton(type: .custom)
-            dl.frame = CGRect(x: 16, y: y, width: w - 32, height: 44)
-            dl.setTitleColor(.white, for: .normal)
-            dl.titleLabel?.font = UIFont.boldSystemFont(ofSize: 15)
-            dl.layer.cornerRadius = 8
+        let half = floor((rowW - gap) / 2)
+        if isAudio {
+            let playNext = makeSecondaryButton("Play Next", frame: CGRect(x: x, y: y, width: half, height: 40))
+            playNext.addTarget(self, action: #selector(playNextTapped), for: .touchUpInside)
+            let addEnd = makeSecondaryButton("Add to Queue",
+                                             frame: CGRect(x: x + rowW - half, y: y, width: half, height: 40))
+            addEnd.addTarget(self, action: #selector(addToQueueTapped), for: .touchUpInside)
+        } else {
+            var dlFrame = CGRect(x: x, y: y, width: rowW, height: 40)
+            if resumeAt > 0 {
+                let fromStart = makeSecondaryButton("Play from Start", frame: CGRect(x: x, y: y, width: half, height: 40))
+                fromStart.addTarget(self, action: #selector(playFromStartTapped), for: .touchUpInside)
+                dlFrame = CGRect(x: x + rowW - half, y: y, width: half, height: 40)
+            }
+            let dl = makeSecondaryButton("Download", frame: dlFrame)
             dl.addTarget(self, action: #selector(downloadTapped), for: .touchUpInside)
-            scrollView.addSubview(dl)
             downloadBtn = dl
             updateDownloadButton()
-            y += 44 + 20
         }
-
-        // Track pickers + transcode toggle (video only, when tracks are available)
-        if item.type != "Audio" {
-            let audioStreams = mediaStreams.filter { $0.isAudio }
-            let subtitleStreams = mediaStreams.filter { $0.isSubtitle }
-            let hasTrackOptions = audioStreams.count > 1 || !subtitleStreams.isEmpty
-
-            if audioStreams.count > 1 {
-                let label = audioStreams.first(where: { $0.index == selectedAudioIndex })?.displayTitle ?? "Default"
-                let btn = makeTrackButton("Audio: \(label)  ▾", y: y, width: w)
-                btn.addTarget(self, action: #selector(audioTapped), for: .touchUpInside)
-                scrollView.addSubview(btn)
-                y += 40 + 8
-            }
-
-            if !subtitleStreams.isEmpty {
-                let label = selectedSubtitleIndex.flatMap { idx in
-                    subtitleStreams.first(where: { $0.index == idx })?.displayTitle
-                } ?? "Off"
-                let btn = makeTrackButton("Subtitles: \(label)  ▾", y: y, width: w)
-                btn.addTarget(self, action: #selector(subtitleTapped), for: .touchUpInside)
-                scrollView.addSubview(btn)
-                y += 40 + 8
-            }
-
-            if hasTrackOptions {
-                let transcodeTitle = forceTranscode ? "Transcode: On  ✓" : "Transcode: Off"
-                let transcodeBtn = makeTrackButton(transcodeTitle, y: y, width: w)
-                transcodeBtn.addTarget(self, action: #selector(transcodeTapped), for: .touchUpInside)
-                if forceTranscode {
-                    transcodeBtn.layer.borderColor = accentColor.cgColor
-                    transcodeBtn.layer.borderWidth = 1.5
-                }
-                scrollView.addSubview(transcodeBtn)
-                y += 40 + 6
-
-                let hint = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 0))
-                hint.text = "Transcode must be enabled to apply audio track or subtitle changes."
-                hint.textColor = UIColor(white: 0.45, alpha: 1.0)
-                hint.backgroundColor = .clear
-                hint.font = UIFont.systemFont(ofSize: 12)
-                hint.textAlignment = .center
-                hint.numberOfLines = 0
-                hint.sizeToFit()
-                hint.frame = CGRect(x: 16, y: y, width: w - 32, height: hint.frame.height)
-                scrollView.addSubview(hint)
-                y += hint.frame.height + 8
-            }
-        }
-
-        y = buildFileMetadata(y: y, width: w)
-
-        y += 30
-        scrollView.contentSize = CGSize(width: w, height: y)
+        return y + 40 + 20
     }
 
-    // Small metadata block (size / date added / container+codec) at the bottom of the page.
-    // Each line only appears if the server actually returned that field. Returns the updated y.
-    private func buildFileMetadata(y: CGFloat, width w: CGFloat) -> CGFloat {
-        guard let info = fileInfo else { return y }
-        var lines: [String] = []
-        if let size = info.sizeBytes {
-            lines.append("File size: \(DownloadManager.formatBytes(Double(size)))")
+    // Audio and subtitle choices as rows showing the current pick. Choosing anything but
+    // the file's defaults makes the server transcode, which a line under them says.
+    private func buildTrackRows(x: CGFloat, y startY: CGFloat, width w: CGFloat) -> CGFloat {
+        var y = startY
+        let audioStreams = mediaStreams.filter { $0.isAudio }
+        let subtitleStreams = mediaStreams.filter { $0.isSubtitle }
+
+        if audioStreams.count > 1 {
+            let value = audioStreams.first(where: { $0.index == selectedAudioIndex })?.displayTitle ?? "Default"
+            let row = makeChoiceRow("Audio", value: value, frame: CGRect(x: x, y: y, width: w, height: 40))
+            row.addTarget(self, action: #selector(audioTapped), for: .touchUpInside)
+            y += 40 + 8
         }
+        if !subtitleStreams.isEmpty {
+            let value = selectedSubtitleIndex.flatMap { idx in
+                subtitleStreams.first(where: { $0.index == idx })?.displayTitle
+            } ?? "Off"
+            let row = makeChoiceRow("Subtitles", value: value, frame: CGRect(x: x, y: y, width: w, height: 40))
+            row.addTarget(self, action: #selector(subtitleTapped), for: .touchUpInside)
+            y += 40 + 8
+        }
+        if forceTranscode {
+            y += addLabel("The server converts the video to apply these tracks, so it may take a moment longer to start.",
+                          font: UIFont.systemFont(ofSize: 12), color: UIColor(white: 0.5, alpha: 1),
+                          x: x, y: y, width: w) + 8
+        }
+        return y
+    }
+
+    // Small file facts (size and formats, date added) at the bottom of the page. Each part
+    // only appears if the server returned it. Returns the updated y.
+    private func buildFileMetadata(y: CGFloat, x: CGFloat, width w: CGFloat) -> CGFloat {
+        guard let info = fileInfo else { return y }
+        var format: [String] = []
+        if let size = info.sizeBytes { format.append(DownloadManager.formatBytes(Double(size))) }
+        if let container = info.container?.uppercased() { format.append(container) }
+        if let codec = info.videoCodec {
+            let video = [ItemDetailVC.codecLabel(codec), ItemDetailVC.resolutionLabel(info)].compactMap { $0 }
+            format.append(video.joined(separator: " "))
+        }
+        if let codec = info.audioCodec {
+            let audio = [ItemDetailVC.audioCodecLabel(codec), info.audioChannels.map(ItemDetailVC.channelsLabel)]
+                .compactMap { $0 }.joined(separator: " ")
+            // A FLAC file's container and codec are the same word.
+            if audio != format.last { format.append(audio) }
+        }
+        var lines: [String] = []
+        if !format.isEmpty { lines.append(format.joined(separator: " \u{00b7} ")) }
         if let date = info.dateCreated {
             let df = DateFormatter()
             df.dateStyle = .medium
             df.timeStyle = .none
-            lines.append("Added: \(df.string(from: date))")
-        }
-        let formatParts = [info.container?.uppercased(), info.videoCodec.map(ItemDetailVC.codecLabel)].compactMap { $0 }
-        if !formatParts.isEmpty {
-            lines.append("Format: \(formatParts.joined(separator: " \u{00b7} "))")
+            lines.append("Added \(df.string(from: date))")
         }
         guard !lines.isEmpty else { return y }
 
         var y = y + 8
-        let divider = UIView(frame: CGRect(x: 16, y: y, width: w - 32, height: 1))
+        let divider = UIView(frame: CGRect(x: x, y: y, width: w, height: 1))
         divider.backgroundColor = UIColor(white: 1.0, alpha: 0.1)
         scrollView.addSubview(divider)
-        y += 1 + 14
-
-        let label = UILabel(frame: CGRect(x: 16, y: y, width: w - 32, height: 0))
-        label.text = lines.joined(separator: "\n")
-        label.textColor = UIColor(white: 0.45, alpha: 1.0)
-        label.backgroundColor = .clear
-        label.font = UIFont.systemFont(ofSize: 12)
-        label.textAlignment = .center
-        label.numberOfLines = 0
-        label.sizeToFit()
-        label.frame = CGRect(x: 16, y: y, width: w - 32, height: label.frame.height)
-        scrollView.addSubview(label)
-        y += label.frame.height
+        y += 1 + 12
+        y += addLabel(lines.joined(separator: "\n"), font: UIFont.systemFont(ofSize: 12),
+                      color: UIColor(white: 0.5, alpha: 1.0), x: x, y: y, width: w)
         return y
+    }
+
+    // Behind the header: the backdrop, darkened so white text reads on it, fading into the
+    // page at the bottom instead of ending on a hard edge. Goes under everything else.
+    private func addBackdrop(url: String, width: CGFloat, height: CGFloat) {
+        let band = UIView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        band.clipsToBounds = true
+        band.backgroundColor = bgColor
+        let image = AsyncImageView(frame: band.bounds)
+        image.contentMode = .scaleAspectFill
+        image.backgroundColor = .clear
+        image.load(url: url)
+        band.addSubview(image)
+        let shade = UIView(frame: band.bounds)
+        shade.backgroundColor = UIColor(white: 0, alpha: 0.45)
+        band.addSubview(shade)
+        let fade = CAGradientLayer()
+        fade.frame = CGRect(x: 0, y: floor(height * 0.4), width: width, height: height - floor(height * 0.4))
+        fade.colors = [bgColor.withAlphaComponent(0).cgColor, bgColor.cgColor]
+        band.layer.addSublayer(fade)
+        scrollView.insertSubview(band, at: 0)
+    }
+
+    // Adds a label sized to its text; returns its height.
+    @discardableResult
+    private func addLabel(_ text: String, font: UIFont, color: UIColor, x: CGFloat, y: CGFloat,
+                          width: CGFloat, lines: Int = 0) -> CGFloat {
+        let label = UILabel()
+        label.text = text
+        label.font = font
+        label.textColor = color
+        label.backgroundColor = .clear
+        label.numberOfLines = lines
+        let h = ceil(label.sizeThatFits(CGSize(width: width, height: 10_000)).height)
+        label.frame = CGRect(x: x, y: y, width: width, height: h)
+        scrollView.addSubview(label)
+        return h
+    }
+
+    private func makeSecondaryButton(_ title: String, frame: CGRect) -> UIButton {
+        let btn = UIButton(type: .custom)
+        btn.frame = frame
+        btn.setTitle(title, for: .normal)
+        btn.setTitleColor(.white, for: .normal)
+        btn.setTitleColor(UIColor(white: 1, alpha: 0.5), for: .highlighted)
+        btn.titleLabel?.font = UIFont.systemFont(ofSize: 15)
+        // "Downloading 42%…" has to fit half a phone's width.
+        btn.titleLabel?.adjustsFontSizeToFitWidth = true
+        btn.titleLabel?.minimumScaleFactor = 0.75
+        btn.contentEdgeInsets = UIEdgeInsets(top: 0, left: 6, bottom: 0, right: 6)
+        btn.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
+        btn.layer.cornerRadius = 8
+        btn.layer.borderColor = UIColor(white: 1.0, alpha: 0.15).cgColor
+        btn.layer.borderWidth = 1
+        scrollView.addSubview(btn)
+        return btn
+    }
+
+    // "Audio            English - AC3 - 5.1 ›"
+    private func makeChoiceRow(_ title: String, value: String, frame: CGRect) -> UIButton {
+        let row = makeSecondaryButton("", frame: frame)
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = UIFont.systemFont(ofSize: 15)
+        titleLabel.textColor = .white
+        titleLabel.backgroundColor = .clear
+        let titleW = ceil(titleLabel.sizeThatFits(CGSize(width: frame.width, height: frame.height)).width)
+        titleLabel.frame = CGRect(x: 12, y: 0, width: titleW, height: frame.height)
+        row.addSubview(titleLabel)
+
+        let valueLabel = UILabel()
+        valueLabel.text = value + "  \u{203A}"
+        valueLabel.font = UIFont.systemFont(ofSize: 14)
+        valueLabel.textColor = UIColor(white: 1, alpha: 0.6)
+        valueLabel.backgroundColor = .clear
+        valueLabel.textAlignment = .right
+        valueLabel.lineBreakMode = .byTruncatingMiddle
+        let valueX = 12 + titleW + 12
+        valueLabel.frame = CGRect(x: valueX, y: 0, width: frame.width - valueX - 12, height: frame.height)
+        row.addSubview(valueLabel)
+        return row
+    }
+
+    // MARK: - Text helpers
+
+    // "1:02:10" / "42:10"
+    private static func clock(_ seconds: Double) -> String {
+        let s = Int(seconds)
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                         : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    // "2 h 16 min" / "47 min"
+    private static func runtimeText(_ seconds: Double) -> String {
+        let minutes = max(1, Int(seconds / 60 + 0.5))
+        return minutes < 60 ? "\(minutes) min" : "\(minutes / 60) h \(minutes % 60) min"
     }
 
     private static func codecLabel(_ raw: String) -> String {
@@ -356,17 +562,34 @@ class ItemDetailVC: UIViewController {
         return known[raw.lowercased()] ?? raw.uppercased()
     }
 
-    private func makeTrackButton(_ title: String, y: CGFloat, width w: CGFloat) -> UIButton {
-        let btn = UIButton(type: .custom)
-        btn.frame = CGRect(x: 16, y: y, width: w - 32, height: 40)
-        btn.setTitle(title, for: .normal)
-        btn.setTitleColor(.white, for: .normal)
-        btn.titleLabel?.font = UIFont.systemFont(ofSize: 15)
-        btn.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
-        btn.layer.cornerRadius = 8
-        btn.layer.borderColor = UIColor(white: 1.0, alpha: 0.15).cgColor
-        btn.layer.borderWidth = 1
-        return btn
+    // By width: a 1920x800 scope film is still 1080p.
+    private static func resolutionLabel(_ info: MediaFileInfo) -> String? {
+        guard let w = info.videoWidth, w > 0 else { return info.videoHeight.map { "\($0)p" } }
+        if w >= 3800 { return "4K" }
+        if w >= 1900 { return "1080p" }
+        if w >= 1260 { return "720p" }
+        if let h = info.videoHeight, h > 0 { return "\(h)p" }
+        return nil
+    }
+
+    private static func audioCodecLabel(_ raw: String) -> String {
+        let known = [
+            "aac": "AAC", "ac3": "AC3", "eac3": "E-AC3", "dts": "DTS", "truehd": "TrueHD",
+            "flac": "FLAC", "alac": "ALAC", "mp3": "MP3", "opus": "Opus", "vorbis": "Vorbis"
+        ]
+        let key = raw.lowercased()
+        if key.hasPrefix("pcm") { return "PCM" }
+        return known[key] ?? raw.uppercased()
+    }
+
+    private static func channelsLabel(_ n: Int) -> String {
+        switch n {
+        case 1: return "Mono"
+        case 2: return "Stereo"
+        case 6: return "5.1"
+        case 8: return "7.1"
+        default: return "\(n) ch"
+        }
     }
 
     // MARK: - Track pickers
@@ -443,12 +666,10 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
-    @objc private func transcodeTapped() {
-        forceTranscode = !forceTranscode
-        forceRebuild()
-    }
+    @objc private func playTapped() { play(startOver: false) }
+    @objc private func playFromStartTapped() { play(startOver: true) }
 
-    @objc private func playTapped() {
+    private func play(startOver: Bool) {
         if item.type == "Audio" {
             AudioQueue.shared.play(items: [item], startAt: 0)
             navigationController?.pushViewController(NowPlayingVC(), animated: true)
@@ -460,7 +681,8 @@ class ItemDetailVC: UIViewController {
                           subtitleIndex: selectedSubtitleIndex,
                           forceTranscode: forceTranscode,
                           // The list's UserData covers a tap before getMediaInfo answers.
-                          serverState: fileInfo?.playState ?? item.playState),
+                          serverState: fileInfo?.playState ?? item.playState,
+                          startOver: startOver),
             animated: true
         )
     }
@@ -699,7 +921,8 @@ class ItemDetailVC: UIViewController {
             btn.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
             btn.isEnabled = false
         } else if DownloadManager.isDownloaded(item.id) {
-            btn.setTitle("Downloaded \u{2713}  (tap to delete)", for: .normal)
+            // Tapping it still offers to delete the copy.
+            btn.setTitle("Downloaded \u{2713}", for: .normal)
             btn.backgroundColor = UIColor(red: 0.15, green: 0.4, blue: 0.15, alpha: 1)
             btn.isEnabled = true
         } else {

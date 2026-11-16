@@ -108,6 +108,16 @@ struct MediaItem {
         return posterImageURL(maxWidth: maxWidth)
     }
 
+    // Wide art for a page background: the item's own backdrop, else its parent's (an
+    // episode's show). nil when there's neither, and the page keeps its plain background.
+    func backdropImageURL(maxWidth: Int) -> String? {
+        if images.backdrop { return MediaItem.imageURL(itemId: id, type: "Backdrop", maxWidth: maxWidth) }
+        if let pid = images.parentBackdropItemId {
+            return MediaItem.imageURL(itemId: pid, type: "Backdrop", maxWidth: maxWidth)
+        }
+        return nil
+    }
+
     // MARK: - Persistence (DownloadManager's offline registry + the audio queue)
     //
     // Both stores share this round-trip, so every field has to stay
