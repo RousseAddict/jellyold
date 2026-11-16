@@ -130,6 +130,26 @@ class JellyfinAPI {
         }
     }
 
+    // MARK: - Played state
+
+    // Marks an item watched (POST) or unwatched (DELETE), like the check button in
+    // Jellyfin's own apps. Either way the server also drops the item's resume point. The
+    // reply is the item's new UserData, handed back when it's readable; `ok` is false when
+    // the server couldn't be reached or refused.
+    static func setPlayed(_ played: Bool, itemId: String,
+                          completion: @escaping (_ ok: Bool, _ state: ServerPlayState?) -> Void) {
+        guard let serverURL = JellyfinServer.serverURL,
+              let userId = JellyfinServer.userId else { completion(false, nil); return }
+        let url = "\(serverURL)/Users/\(userId)/PlayedItems/\(itemId)"
+        CurlFetcher.sendData(method: played ? "POST" : "DELETE", url: url,
+                             headers: ["Authorization": JellyfinServer.authHeader()]) { data in
+            guard let data = data else { completion(false, nil); return }
+            let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            // Without a Played key ServerPlayState would read "not played" either way.
+            completion(true, json?["Played"] != nil ? ServerPlayState(userData: json) : nil)
+        }
+    }
+
     // Jellyfin emits e.g. "2023-05-01T12:34:56.7890000Z" (7-digit fractional seconds, not a
     // standard format DateFormatter can parse directly) — truncate to whole seconds, which is
     // plenty of precision for a "date added" display or a last-played comparison.

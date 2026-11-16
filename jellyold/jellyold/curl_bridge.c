@@ -2,6 +2,7 @@
 #include <curl/curl.h>
 #include <pthread.h>
 #include <poll.h>
+#include <string.h>
 
 /* Shared DNS/connection/TLS-session cache across every easy handle, so
    concurrent proxy connections to the same Jellyfin host reuse lookups and
@@ -109,6 +110,18 @@ void curl_bridge_set_headers(CurlHandle h, void *list) {
 
 void curl_bridge_headers_free(void *list) {
     curl_slist_free_all((struct curl_slist *)list);
+}
+
+/* POST goes through curl's own POST mode with an empty body, so it carries the
+   Content-Length: 0 servers expect (POSTFIELDS NULL would read the body from stdin
+   instead). Any other method only changes the request line. */
+void curl_bridge_set_bodyless_method(CurlHandle h, const char *method) {
+    if (strcmp(method, "POST") == 0) {
+        curl_easy_setopt(h, CURLOPT_POSTFIELDSIZE, 0L);
+        curl_easy_setopt(h, CURLOPT_POSTFIELDS, "");
+    } else {
+        curl_easy_setopt(h, CURLOPT_CUSTOMREQUEST, method);
+    }
 }
 
 /* --- Raw TLS socket mode (Chromecast CASTV2) --- */

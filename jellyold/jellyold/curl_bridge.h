@@ -33,6 +33,9 @@ void        curl_bridge_set_post_body(CurlHandle h, const void *body, long len);
 void       *curl_bridge_headers_append(void *list, const char *header);
 void        curl_bridge_set_headers(CurlHandle h, void *list);
 void        curl_bridge_headers_free(void *list);
+/* Sends the request as `method` with no body (it is a GET otherwise) — Jellyfin's
+   played-state toggles: POST marks an item watched, DELETE unwatched. */
+void        curl_bridge_set_bodyless_method(CurlHandle h, const char *method);
 
 /* Raw TLS socket mode (used by the Chromecast CASTV2 session).
    connect_only does DNS + TCP + TLS and then stops, exposing the socket for

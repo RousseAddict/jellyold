@@ -128,6 +128,24 @@ class CurlFetcher {
         }
     }
 
+    // A bodyless request with another method than GET (Jellyfin's played-state toggles:
+    // POST / DELETE) -> the reply on any 2xx, nil otherwise; completion on the main thread.
+    static func sendData(method: String,
+                         url: String,
+                         headers: [String: String],
+                         timeout: Int = 15,
+                         completion: @escaping (Data?) -> Void) {
+        let fetcher = CurlFetcher()
+        retain(fetcher)
+        CurlFetcher.curlQueue.async {
+            let data = fetcher.syncFetchData(url: url, headers: headers, timeout: timeout, method: method)
+            DispatchQueue.main.async {
+                release(fetcher)
+                completion(data)
+            }
+        }
+    }
+
     // Download url -> local file with progress, on the dedicated download queue;
     // completion on the main thread. Used by DownloadManager.
     static func downloadToFile(url: String,
@@ -161,7 +179,9 @@ class CurlFetcher {
 
     // MARK: - Synchronous implementations (run on the background queue)
 
-    private func syncFetchData(url: String, headers: [String: String], timeout: Int) -> Data? {
+    // `method` nil is a GET; anything else is sent with no body.
+    private func syncFetchData(url: String, headers: [String: String], timeout: Int,
+                               method: String? = nil) -> Data? {
         _ = CurlFetcher.curlGlobalInit  // ensures curl_global_init ran once before any easy_init
         let h = curl_bridge_init()
         defer { curl_bridge_cleanup(h) }
@@ -170,6 +190,7 @@ class CurlFetcher {
         let ptr = Unmanaged.passUnretained(buf).toOpaque()
 
         url.withCString { curl_bridge_set_url(h, $0) }
+        if let method = method { method.withCString { curl_bridge_set_bodyless_method(h, $0) } }
         curl_bridge_set_ssl_noverify(h)
         curl_bridge_set_follow_redirects(h)
         curl_bridge_set_timeout(h, CLong(timeout))

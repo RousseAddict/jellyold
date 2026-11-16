@@ -46,6 +46,8 @@ class ItemDetailVC: UIViewController {
     private let item: MediaItem
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
     private let accentColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1.0)
+    // Downloaded, watched.
+    private let doneColor = UIColor(red: 0.15, green: 0.4, blue: 0.15, alpha: 1.0)
     private var scrollView: UIScrollView!
     private var lastBuiltWidth: CGFloat = 0
     private var hasAppeared = false
@@ -55,6 +57,21 @@ class ItemDetailVC: UIViewController {
     private var defaultAudioIndex: Int?     // the server-reported default, for the "Original" check
     private var selectedSubtitleIndex: Int?
     private var fileInfo: MediaFileInfo?
+    // The server's answer to a watched toggle made here, until the next full fetch.
+    private var markedState: ServerPlayState?
+    // The toggle's new value while the server hasn't answered.
+    private var playedPending: Bool?
+
+    // What the server knows of this user and the item, newest first: a toggle made here,
+    // the full fetch, the list item this page was opened from.
+    private var serverState: ServerPlayState? {
+        return markedState ?? fileInfo?.playState ?? item.playState
+    }
+    private var isPlayed: Bool { return playedPending ?? serverState?.played ?? false }
+    // Where Play starts, 0 for the beginning: the same position the player will pick.
+    private var resumePosition: Double {
+        return item.type == "Audio" ? 0 : ResumeStore.startPosition(for: item.id, server: serverState)
+    }
 
     // Jellyfin only applies a track choice in a full transcode (a remux keeps the file's
     // default tracks), so choosing one is what turns it on.
@@ -102,7 +119,7 @@ class ItemDetailVC: UIViewController {
                                               bottom: MiniPlayerBar.barHeight, right: 0)
         view.addSubview(scrollView)
         // Back from playing it: the server now has a new resume point, or marked it watched.
-        NotificationCenter.default.addObserver(self, selector: #selector(playbackReported),
+        NotificationCenter.default.addObserver(self, selector: #selector(playbackReported(_:)),
                                                name: PlaybackReporter.didStopNotification, object: nil)
         loadInfo()
     }
@@ -117,6 +134,7 @@ class ItemDetailVC: UIViewController {
             if self.fileInfo != nil && info.item == nil { return }
             self.mediaStreams = streams
             self.fileInfo = info
+            self.markedState = nil
             // Only the first time: a refresh after playback keeps the tracks chosen here.
             if self.item.type != "Audio" && self.defaultAudioIndex == nil {
                 let audioStreams = streams.filter { $0.isAudio }
@@ -129,7 +147,9 @@ class ItemDetailVC: UIViewController {
         }
     }
 
-    @objc private func playbackReported() {
+    @objc private func playbackReported(_ note: Notification) {
+        // A watched toggle made here has already updated this page.
+        if (note.object as? ItemDetailVC) === self { return }
         DispatchQueue.main.async { [weak self] in self?.loadInfo() }
     }
 
@@ -313,19 +333,19 @@ class ItemDetailVC: UIViewController {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
-    // Play (or Resume, with how far in) beside Cast, then a row of secondary actions:
-    // Play from Start + Download when there's a resume point, Download alone otherwise,
-    // and Play Next + Add to Queue for a track. Returns the y below them.
+    // Play (or Resume, with how far in) beside Cast and, for anything but a track, the
+    // watched toggle; then a row of secondary actions: Play from Start + Download when
+    // there's a resume point, Download alone otherwise, and Play Next + Add to Queue for a
+    // track. Returns the y below them.
     private func buildActions(_ shown: MediaItem, x: CGFloat, y startY: CGFloat, width bodyW: CGFloat) -> CGFloat {
         var y = startY
         let rowW = min(bodyW, 420)
         let isAudio = item.type == "Audio"
-        // The same position the player will start from.
-        let resumeAt = isAudio ? 0 : ResumeStore.startPosition(for: item.id, server: fileInfo?.playState ?? item.playState)
+        let resumeAt = resumePosition
 
-        let castW: CGFloat = 50
+        let iconW: CGFloat = 50
         let gap: CGFloat = 8
-        let playW = rowW - castW - gap
+        let playW = rowW - (iconW + gap) * (isAudio ? 1 : 2)
         let playBtn = UIButton(type: .custom)
         playBtn.frame = CGRect(x: x, y: y, width: playW, height: 50)
         playBtn.setTitle(resumeAt > 0 ? "Resume " + ItemDetailVC.clock(resumeAt) : "Play", for: .normal)
@@ -339,7 +359,7 @@ class ItemDetailVC: UIViewController {
 
         // Photos never reach this screen, so everything that gets here is castable.
         let cast = UIButton(type: .custom)
-        cast.frame = CGRect(x: x + playW + gap, y: y, width: castW, height: 50)
+        cast.frame = CGRect(x: x + playW + gap, y: y, width: iconW, height: 50)
         cast.setImage(UIImage(named: "cast"), for: .normal)
         cast.backgroundColor = accentColor
         cast.layer.cornerRadius = 10
@@ -354,6 +374,10 @@ class ItemDetailVC: UIViewController {
         spinner.hidesWhenStopped = true
         cast.addSubview(spinner)
         castSpinner = spinner
+
+        if !isAudio {
+            addWatchedToggle(frame: CGRect(x: x + rowW - iconW, y: y, width: iconW, height: 50))
+        }
         y += 50
 
         if resumeAt > 0, let duration = shown.durationSeconds, duration > 0 {
@@ -388,6 +412,46 @@ class ItemDetailVC: UIViewController {
             updateDownloadButton()
         }
         return y + 40 + 20
+    }
+
+    // A check in a square, green once watched, as in Jellyfin's own apps. Greyed out while
+    // the server hasn't answered a tap.
+    private func addWatchedToggle(frame: CGRect) {
+        let played = isPlayed
+        let btn = UIButton(type: .custom)
+        btn.frame = frame
+        btn.layer.cornerRadius = 10
+        if played {
+            btn.backgroundColor = doneColor
+        } else {
+            btn.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
+            btn.layer.borderColor = UIColor(white: 1.0, alpha: 0.15).cgColor
+            btn.layer.borderWidth = 1
+        }
+        btn.setImage(played ? ItemDetailVC.checkOn : ItemDetailVC.checkOff, for: .normal)
+        btn.isEnabled = playedPending == nil
+        btn.accessibilityLabel = played ? "Watched. Mark as unwatched" : "Mark as watched"
+        btn.addTarget(self, action: #selector(watchedTapped), for: .touchUpInside)
+        scrollView.addSubview(btn)
+    }
+
+    private static let checkOn = checkImage(alpha: 1)
+    private static let checkOff = checkImage(alpha: 0.45)
+
+    // Drawn rather than bundled: a 24 pt check mark, 3 pt stroke.
+    private static func checkImage(alpha: CGFloat) -> UIImage? {
+        UIGraphicsBeginImageContextWithOptions(CGSize(width: 24, height: 24), false, 0)
+        defer { UIGraphicsEndImageContext() }
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: 4, y: 12.5))
+        path.addLine(to: CGPoint(x: 9.5, y: 18))
+        path.addLine(to: CGPoint(x: 20, y: 6.5))
+        path.lineWidth = 3
+        path.lineCapStyle = .round
+        path.lineJoinStyle = .round
+        UIColor(white: 1, alpha: alpha).setStroke()
+        path.stroke()
+        return UIGraphicsGetImageFromCurrentImageContext()
     }
 
     // Audio and subtitle choices as rows showing the current pick. Choosing anything but
@@ -681,7 +745,7 @@ class ItemDetailVC: UIViewController {
                           subtitleIndex: selectedSubtitleIndex,
                           forceTranscode: forceTranscode,
                           // The list's UserData covers a tap before getMediaInfo answers.
-                          serverState: fileInfo?.playState ?? item.playState,
+                          serverState: serverState,
                           startOver: startOver),
             animated: true
         )
@@ -689,6 +753,76 @@ class ItemDetailVC: UIViewController {
 
     @objc private func playNextTapped() { AudioQueue.shared.playNext(item) }
     @objc private func addToQueueTapped() { AudioQueue.shared.addToEnd(item) }
+
+    // MARK: - Watched
+
+    @objc private func watchedTapped() {
+        guard playedPending == nil else { return }
+        if isPlayed {
+            setPlayed(false)
+            return
+        }
+        // Jellyfin forgets the resume point of anything marked watched, so ask first.
+        let resumeAt = resumePosition
+        if resumeAt > 0 {
+            confirmMarkWatched(resumeAt: resumeAt)
+        } else {
+            setPlayed(true)
+        }
+    }
+
+    private func confirmMarkWatched(resumeAt: Double) {
+        let message = "This clears your resume point at \(ItemDetailVC.clock(resumeAt))."
+#if IOS6_TARGET
+        let sheet = UIActionSheet(title: "Mark as watched? " + message, delegate: self,
+                                  cancelButtonTitle: "Cancel", destructiveButtonTitle: "Mark as Watched")
+        sheet.tag = 7
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Mark as Watched", message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Mark as Watched", style: .destructive) { [weak self] _ in
+            self?.setPlayed(true)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
+    // The toggle flips at once and stays disabled until the server answers; it keeps the
+    // server's word, or flips back with a message if the request failed.
+    private func setPlayed(_ played: Bool) {
+        playedPending = played
+        forceRebuild()
+        let itemId = item.id
+        JellyfinAPI.setPlayed(played, itemId: itemId) { [weak self] ok, state in
+            // The server dropped the resume point either way. This device's goes too, or
+            // ResumeStore would bring it back as a Resume button.
+            if ok { ResumeStore.clear(itemId) }
+            if let self = self {
+                self.playedPending = nil
+                if ok {
+                    self.markedState = state ?? ServerPlayState(userData: ["Played": NSNumber(value: played)])
+                } else if self.view.window != nil {
+                    self.showMessage("Couldn't Reach the Server",
+                                     "It wasn't marked as \(played ? "watched" : "unwatched"). Try again in a moment.")
+                }
+                self.forceRebuild()
+            }
+            // Home's Continue watching and Next up re-read on this, even with this page gone.
+            if ok { NotificationCenter.default.post(name: PlaybackReporter.didStopNotification, object: self) }
+        }
+    }
+
+    private func showMessage(_ title: String, _ message: String) {
+#if IOS6_TARGET
+        UIAlertView(title: title, message: message, delegate: nil, cancelButtonTitle: "OK").show()
+#else
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default))
+        present(alert, animated: true)
+#endif
+    }
 
     // MARK: - Cast
 
@@ -713,17 +847,8 @@ class ItemDetailVC: UIViewController {
     }
 
     private func showNoDevicesAlert() {
-#if IOS6_TARGET
-        UIAlertView(title: "No Chromecast found",
-                    message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
-                    delegate: nil, cancelButtonTitle: "OK").show()
-#else
-        let alert = UIAlertController(title: "No Chromecast found",
-                                      message: "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.",
-                                      preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "OK", style: .default))
-        present(alert, animated: true)
-#endif
+        showMessage("No Chromecast found",
+                    "Make sure a Chromecast is powered on and joined to the same Wi-Fi network as this device.")
     }
 
     private func presentCastDevicePicker(_ devices: [CastDevice]) {
@@ -795,8 +920,7 @@ class ItemDetailVC: UIViewController {
         // from the device.
         let sources = isAudio ? audioCastSources() : videoCastSources(quality: quality ?? .original)
 
-        let start = CastController.shared.savedResumePosition(for: item, kind: kind,
-                                                              server: fileInfo?.playState ?? item.playState)
+        let start = CastController.shared.savedResumePosition(for: item, kind: kind, server: serverState)
         CastController.shared.start(item: item, kind: kind, device: device,
                                     sources: sources, startTime: start)
         guard CastController.shared.isCasting else { return }
@@ -923,7 +1047,7 @@ class ItemDetailVC: UIViewController {
         } else if DownloadManager.isDownloaded(item.id) {
             // Tapping it still offers to delete the copy.
             btn.setTitle("Downloaded \u{2713}", for: .normal)
-            btn.backgroundColor = UIColor(red: 0.15, green: 0.4, blue: 0.15, alpha: 1)
+            btn.backgroundColor = doneColor
             btn.isEnabled = true
         } else {
             btn.setTitle("Download", for: .normal)
@@ -1097,6 +1221,8 @@ extension ItemDetailVC: UIActionSheetDelegate {
         case 6:
             guard buttonIndex < pendingCastQualities.count else { return }
             beginCast(quality: pendingCastQualities[buttonIndex])
+        case 7:
+            setPlayed(true)
         default:
             break
         }
