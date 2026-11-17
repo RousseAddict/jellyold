@@ -513,7 +513,7 @@ class ItemDetailVC: UIViewController {
         if audioStreams.count > 1 {
             let value = audioStreams.first(where: { $0.index == selectedAudioIndex })?.displayTitle ?? "Default"
             let row = makeChoiceRow("Audio", value: value, frame: CGRect(x: x, y: y, width: w, height: 40))
-            row.addTarget(self, action: #selector(audioTapped), for: .touchUpInside)
+            row.addTarget(self, action: #selector(audioTapped(_:)), for: .touchUpInside)
             y += 40 + 8
         }
         if !subtitleStreams.isEmpty {
@@ -521,13 +521,13 @@ class ItemDetailVC: UIViewController {
                 subtitleStreams.first(where: { $0.index == idx })?.displayTitle
             } ?? "Off"
             let row = makeChoiceRow("Subtitles", value: value, frame: CGRect(x: x, y: y, width: w, height: 40))
-            row.addTarget(self, action: #selector(subtitleTapped), for: .touchUpInside)
+            row.addTarget(self, action: #selector(subtitleTapped(_:)), for: .touchUpInside)
             y += 40 + 8
         }
         if !DownloadManager.isDownloaded(item.id) {
             let row = makeChoiceRow("Quality", value: VideoQuality.playback.shortLabel,
                                     frame: CGRect(x: x, y: y, width: w, height: 40))
-            row.addTarget(self, action: #selector(qualityTapped), for: .touchUpInside)
+            row.addTarget(self, action: #selector(qualityTapped(_:)), for: .touchUpInside)
             y += 40 + 8
         }
         if forceTranscode {
@@ -713,7 +713,7 @@ class ItemDetailVC: UIViewController {
 
     // MARK: - Track pickers
 
-    @objc private func audioTapped() {
+    @objc private func audioTapped(_ sender: UIButton) {
         let audioStreams = mediaStreams.filter { $0.isAudio }
         guard audioStreams.count > 1 else { return }
 
@@ -741,11 +741,11 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: sender)
 #endif
     }
 
-    @objc private func subtitleTapped() {
+    @objc private func subtitleTapped(_ sender: UIButton) {
         let subtitleStreams = mediaStreams.filter { $0.isSubtitle }
         guard !subtitleStreams.isEmpty else { return }
 
@@ -781,13 +781,13 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: sender)
 #endif
     }
 
     // Every tier is offered whatever the tracks: they're ceilings, and a chosen track is
     // applied by the conversion they lead to anyway.
-    @objc private func qualityTapped() {
+    @objc private func qualityTapped(_ sender: UIButton) {
         let current = VideoQuality.playback
 #if IOS6_TARGET
         pendingPlaybackQualities = VideoQuality.allCases
@@ -810,7 +810,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: sender)
 #endif
     }
 
@@ -898,6 +898,41 @@ class ItemDetailVC: UIViewController {
         }
     }
 
+#if !IOS6_TARGET
+    // Every action sheet on this page. On an iPad it is a popover, which iOS 8 has to be
+    // told where to point: without that, choosing a TV in "Cast to…" never led to a cast.
+    // It points at the button or row that opened it. A sheet asked for while another is
+    // still on screen waits for it to go, since UIKit would drop it.
+    private func presentSheet(_ alert: UIAlertController, from anchor: UIView?, attempt: Int = 0) {
+        if presentedViewController != nil {
+            if attempt == 0 {
+                DebugLog.shared.log("UI", "sheet \"\(alert.title ?? "")\" waits for the previous one to close")
+            }
+            guard attempt < 30 else {
+                DebugLog.shared.log("UI", "sheet \"\(alert.title ?? "")\" dropped: the previous one never closed")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.presentSheet(alert, from: anchor, attempt: attempt + 1)
+            }
+            return
+        }
+        if let popover = alert.popoverPresentationController {
+            // The anchor can have been rebuilt away (a page refresh while the Chromecast
+            // search ran): then the middle of the page, without an arrow.
+            if let source = anchor, source.window != nil {
+                popover.sourceView = source
+                popover.sourceRect = source.bounds
+            } else {
+                popover.sourceView = view
+                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
+                popover.permittedArrowDirections = []
+            }
+        }
+        present(alert, animated: true)
+    }
+#endif
+
     private func showMessage(_ title: String, _ message: String) {
 #if IOS6_TARGET
         UIAlertView(title: title, message: message, delegate: nil, cancelButtonTitle: "OK").show()
@@ -954,13 +989,14 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: castBtn)
 #endif
     }
 
     // Audio has no quality tiers (the cast stream is always mp3), so it starts
     // immediately; video goes on to the quality sheet.
     private func deviceChosen(_ device: CastDevice) {
+        DebugLog.shared.log("CAST", "device chosen: \(device.name)")
         pendingCastDevice = device
         if item.type == "Audio" {
             beginCast(quality: nil)
@@ -989,7 +1025,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: castBtn)
 #endif
     }
 
@@ -1211,7 +1247,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: downloadBtn)
 #endif
     }
 
