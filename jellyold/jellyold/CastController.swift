@@ -14,6 +14,26 @@ struct CastSource {
     let url: (Double) -> String?
 }
 
+// MARK: - CastSubtitle
+//
+// A text subtitle the TV draws itself, so the video doesn't have to be converted to paint
+// it in. Jellyfin hands it over as WebVTT, cut to start where the stream starts: a stream
+// re-requested from 600 s gets cues shifted back by 600 s, on the same 0-based timeline.
+struct CastSubtitle {
+    let itemId: String
+    let index: Int
+    let name: String
+
+    func track(offset: Double) -> CastSession.TextTrack? {
+        guard let serverURL = JellyfinServer.serverURL,
+              let token = JellyfinServer.accessToken else { return nil }
+        let ticks = Int64(max(0, offset) * 10_000_000)
+        return CastSession.TextTrack(
+            url: "\(serverURL)/Videos/\(itemId)/\(itemId)/Subtitles/\(index)/\(ticks)/Stream.vtt?api_key=\(token)",
+            name: name)
+    }
+}
+
 // MARK: - CastController
 //
 // App-lifetime owner of the Chromecast cast, so it survives navigating away from the screen
@@ -109,6 +129,8 @@ final class CastController {
 
     private var sources = [CastSource]()
     private var sourceIndex = 0
+    // Sent with every LOAD, at the offset of the stream it goes with.
+    private var subtitle: CastSubtitle?
     // The current source reached PLAYING/PAUSED since its last LOAD (watchdog).
     private var sourceStarted = false
     private var loadGen = 0
@@ -180,7 +202,7 @@ final class CastController {
     }
 
     func start(item: MediaItem, kind: Kind, device: CastDevice,
-               sources: [CastSource], startTime: Double) {
+               sources: [CastSource], startTime: Double, subtitle: CastSubtitle? = nil) {
         // Only one cast at a time. On the same TV the receiver app stays up and the new LOAD
         // replaces what it shows; another TV goes back to its own screen.
         let sameTV = self.device.map { $0.host == device.host } ?? false
@@ -196,6 +218,7 @@ final class CastController {
         self.device = device
         self.sources = sources
         sourceIndex = 0
+        self.subtitle = subtitle
         link = .connecting
         state = "Connecting\u{2026}"
         reportedTime = startTime
@@ -218,8 +241,8 @@ final class CastController {
         let s = makeSession(device)
         s.start(mediaURL: url, contentType: first.contentType,
                 startTime: first.seeksByReloading ? 0 : startTime,
-                timeOffset: timeOffset, itemId: item.id,
-                metadata: metadata(for: item, kind: kind))
+                timeOffset: timeOffset, textTrack: subtitle?.track(offset: timeOffset),
+                itemId: item.id, metadata: metadata(for: item, kind: kind))
         armLoadWatchdog()
     }
 
@@ -253,6 +276,7 @@ final class CastController {
         device = nil
         item = nil
         sources = []
+        subtitle = nil
         link = .connecting
         state = ""
         reportedTime = 0
@@ -380,7 +404,8 @@ final class CastController {
         s.load(mediaURL: url, contentType: src.contentType,
                startTime: src.seeksByReloading ? 0 : t,
                timeOffset: timeOffset,
-               autoplay: autoplay)
+               autoplay: autoplay,
+               textTrack: subtitle?.track(offset: timeOffset))
         armLoadWatchdog()
     }
 
@@ -715,6 +740,7 @@ final class CastController {
             CastController.rebuiltURL(stored, startTime: t, seeksByReloading: reload)
         }]
         sourceIndex = 0
+        subtitle = rec.subtitle
         contentId = rec.contentId
         timeOffset = rec.timeOffset
         duration = rec.item.runTimeTicks.map { Double($0) / 10_000_000 } ?? 0
@@ -759,6 +785,7 @@ final class CastController {
         let timeOffset: Double
         let contentType: String
         let seeksByReloading: Bool
+        let subtitle: CastSubtitle?
     }
 
     private func saveRecord() {
@@ -766,13 +793,17 @@ final class CastController {
         let src = sources[sourceIndex]
         // NSNumber throughout: numbers read back through `as? Int`/`as? Double` silently
         // fail on the 5.1.5 runtime, so they are written and read as NSNumber.
-        let r: [String: Any] = [
+        var r: [String: Any] = [
             "name": d.name, "host": d.host, "port": NSNumber(value: d.port),
             "serviceName": d.serviceName,
             "item": item.toDict(), "kind": kind.rawValue,
             "contentId": contentId, "timeOffset": NSNumber(value: timeOffset),
             "contentType": src.contentType, "seeksByReloading": NSNumber(value: src.seeksByReloading)
         ]
+        if let sub = subtitle {
+            r["subtitleIndex"] = NSNumber(value: sub.index)
+            r["subtitleName"] = sub.name
+        }
         UserDefaults.standard.set(r, forKey: CastController.recordKey)
     }
 
@@ -789,10 +820,14 @@ final class CastController {
         let port = (r["port"] as? NSNumber)?.intValue ?? 8009
         let d = CastDevice(name: name, host: host, port: port,
                            serviceName: (r["serviceName"] as? String) ?? "")
+        let subtitle = (r["subtitleIndex"] as? NSNumber).map {
+            CastSubtitle(itemId: item.id, index: $0.intValue, name: (r["subtitleName"] as? String) ?? "Subtitles")
+        }
         return Record(device: d, item: item, kind: kind, contentId: contentId,
                       timeOffset: (r["timeOffset"] as? NSNumber)?.doubleValue ?? 0,
                       contentType: contentType,
-                      seeksByReloading: (r["seeksByReloading"] as? NSNumber)?.boolValue ?? false)
+                      seeksByReloading: (r["seeksByReloading"] as? NSNumber)?.boolValue ?? false,
+                      subtitle: subtitle)
     }
 
     private func clearRecord() {

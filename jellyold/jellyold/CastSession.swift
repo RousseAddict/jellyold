@@ -66,12 +66,20 @@ final class CastSession: NSObject {
     let device: CastDevice
     var onEvent: ((Event) -> Void)?
 
+    // A subtitle the receiver draws itself: a WebVTT file it fetches alongside the media,
+    // timed to match it.
+    struct TextTrack {
+        let url: String
+        let name: String
+    }
+
     private struct PendingLoad {
         let url: String
         let contentType: String
         let startTime: Double
         let timeOffset: Double
         let autoplay: Bool
+        let textTrack: TextTrack?
     }
 
     // Shared with the caller's thread, guarded by `lock`.
@@ -154,12 +162,12 @@ final class CastSession: NSObject {
     // receiver's position (resume); `timeOffset` is where the URL itself starts in the item.
     // `itemId` rides in the LOAD's customData, so a later join can recognise the media.
     func start(mediaURL: String, contentType: String, startTime: Double, timeOffset: Double,
-               itemId: String, metadata: [String: Any]?) {
+               textTrack: TextTrack?, itemId: String, metadata: [String: Any]?) {
         self.itemId = itemId
         self.metadata = metadata
         pendingLoad = PendingLoad(url: mediaURL, contentType: contentType, startTime: startTime,
-                                  timeOffset: timeOffset, autoplay: true)
-        DebugLog.shared.log("CAST", "start dev=\(device.name) \(device.host):\(device.port) type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s url=\(DebugLog.redact(mediaURL))")
+                                  timeOffset: timeOffset, autoplay: true, textTrack: textTrack)
+        DebugLog.shared.log("CAST", "start dev=\(device.name) \(device.host):\(device.port) type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s url=\(DebugLog.redact(mediaURL))\(CastSession.describe(textTrack))")
         run(joining: false)
     }
 
@@ -179,12 +187,12 @@ final class CastSession: NSObject {
     // Replace the media on the running receiver app — used to fall back to another
     // source and to "seek" a stream the receiver can't seek itself.
     func load(mediaURL: String, contentType: String, startTime: Double, timeOffset: Double,
-              autoplay: Bool) {
+              autoplay: Bool, textTrack: TextTrack?) {
         perform {
-            DebugLog.shared.log("CAST", "reload type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s autoplay=\(autoplay) url=\(DebugLog.redact(mediaURL))")
+            DebugLog.shared.log("CAST", "reload type=\(contentType) at=\(Int(startTime))s offset=\(Int(timeOffset))s autoplay=\(autoplay) url=\(DebugLog.redact(mediaURL))\(CastSession.describe(textTrack))")
             self.deferredSeek = nil
             let p = PendingLoad(url: mediaURL, contentType: contentType, startTime: startTime,
-                                timeOffset: timeOffset, autoplay: autoplay)
+                                timeOffset: timeOffset, autoplay: autoplay, textTrack: textTrack)
             if let tid = self.transportId { self.sendLoad(p, transport: tid) } else { self.pendingLoad = p }
         }
     }
@@ -525,6 +533,10 @@ final class CastSession: NSObject {
         if let m = msid, mediaSessionId != m {
             mediaSessionId = m
             awaitingLoad = false
+            // Whether the receiver took the subtitle track and turned it on.
+            let tracks = ((first["media"] as? [String: Any])?["tracks"] as? [Any])?.count ?? 0
+            let active = ((first["activeTrackIds"] as? [NSNumber]) ?? []).map { $0.stringValue }
+            DebugLog.shared.log("CAST", "media session \(m): tracks=\(tracks) active=[\(active.joined(separator: ","))]")
             if let target = deferredSeek {
                 deferredSeek = nil
                 sendMedia(["type": "SEEK", "currentTime": target])
@@ -600,15 +612,39 @@ final class CastSession: NSObject {
             "customData": ["itemId": itemId, "timeOffset": p.timeOffset]
         ]
         if let meta = metadata { media["metadata"] = meta }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "type": "LOAD",
             "requestId": rid,
             "autoplay": p.autoplay,
             "currentTime": p.startTime,
             "media": media
         ]
+        if let track = p.textTrack {
+            media["tracks"] = [[
+                "trackId": 1,
+                "type": "TEXT",
+                "subtype": "SUBTITLES",
+                "trackContentId": track.url,
+                "trackContentType": "text/vtt",
+                "name": track.name
+            ]]
+            // Like the phone draws them: white with a dark outline, no box behind.
+            media["textTrackStyle"] = [
+                "foregroundColor": "#FFFFFFFF",
+                "backgroundColor": "#00000000",
+                "edgeType": "OUTLINE",
+                "edgeColor": "#000000FF"
+            ]
+            payload["media"] = media
+            payload["activeTrackIds"] = [1]
+        }
         send(CastNS.media, to: transport, payload)
         emit(.state("loading media"))
+    }
+
+    private static func describe(_ track: TextTrack?) -> String {
+        guard let t = track else { return "" }
+        return " sub=\"\(t.name)\" \(DebugLog.redact(t.url))"
     }
 
     private func sendMedia(_ base: [String: Any]) {

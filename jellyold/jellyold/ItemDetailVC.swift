@@ -906,7 +906,7 @@ class ItemDetailVC: UIViewController {
     }
 
     private func presentCastQualityPicker() {
-        let qualities = availableCastQualities
+        let qualities = availableQualities
 #if IOS6_TARGET
         pendingCastQualities = qualities
         let sheet = UIActionSheet(title: "Cast Quality", delegate: self,
@@ -940,9 +940,17 @@ class ItemDetailVC: UIViewController {
         // from the device.
         let sources = isAudio ? audioCastSources() : videoCastSources(quality: quality ?? .original)
 
+        // A text subtitle goes to the TV as a track it draws itself; an image one is
+        // painted into the video (videoCastSources).
+        var subtitle: CastSubtitle?
+        if !isAudio, case .drawn(let index)? = subtitleChoice {
+            let name = mediaStreams.first(where: { $0.index == index })?.displayTitle ?? "Subtitles"
+            subtitle = CastSubtitle(itemId: item.id, index: index, name: name)
+        }
+
         let start = CastController.shared.savedResumePosition(for: item, kind: kind, server: serverState)
         CastController.shared.start(item: item, kind: kind, device: device,
-                                    sources: sources, startTime: start)
+                                    sources: sources, startTime: start, subtitle: subtitle)
         guard CastController.shared.isCasting else { return }
         navigationController?.pushViewController(CastVC(), animated: true)
     }
@@ -958,7 +966,7 @@ class ItemDetailVC: UIViewController {
     private func videoCastSources(quality: DownloadQuality) -> [CastSource] {
         let itemId = item.id
         let audioIndex = selectedAudioIndex
-        let subtitleIndex = selectedSubtitleIndex
+        let subtitleIndex = burnedInSubtitleIndex
         return [
             CastSource(contentType: "application/x-mpegURL", seeksByReloading: false) { _ in
                 ItemDetailVC.hlsURL(itemId: itemId, quality: quality,
@@ -1108,18 +1116,11 @@ class ItemDetailVC: UIViewController {
     }
 
     // "Original" is a remux: it can't switch to a non-default audio track or paint a
-    // subtitle in. A download keeps a text subtitle as a file beside the video instead;
-    // a Chromecast has no app to draw one, so a cast paints in any subtitle.
-    private var availableDownloadQualities: [DownloadQuality] {
-        return qualities(paintsSubtitle: burnedInSubtitleIndex != nil)
-    }
-
-    private var availableCastQualities: [DownloadQuality] {
-        return qualities(paintsSubtitle: selectedSubtitleIndex != nil)
-    }
-
-    private func qualities(paintsSubtitle: Bool) -> [DownloadQuality] {
-        let originalOK = !paintsSubtitle
+    // subtitle in. A text subtitle never needs painting — a download keeps it as a file
+    // beside the video, and a Chromecast draws it from WebVTT — so only an image one rules
+    // Original out. Shared by the download and cast sheets.
+    private var availableQualities: [DownloadQuality] {
+        let originalOK = burnedInSubtitleIndex == nil
             && (selectedAudioIndex == nil || selectedAudioIndex == defaultAudioIndex)
         var list: [DownloadQuality] = originalOK ? [.original] : []
         list.append(contentsOf: [.q720, .q480, .q360])
@@ -1127,7 +1128,7 @@ class ItemDetailVC: UIViewController {
     }
 
     private func presentDownloadQualityPicker() {
-        let qualities = availableDownloadQualities
+        let qualities = availableQualities
 #if IOS6_TARGET
         pendingDownloadQualities = qualities
         let sheet = UIActionSheet(title: "Download Quality", delegate: self,
