@@ -27,6 +27,8 @@ class VideoPlayerVC: UIViewController {
     // "Play from Start" on the detail page: every saved resume point is ignored.
     private let startOver: Bool
     private var startPosition: Double = 0
+    // The player is handed startPosition before it opens the stream; checked once it has.
+    private var startConfirmed = false
     // One per playback: in the transcode URL, so the stop report also ends that ffmpeg
     // job, and in every report.
     private let playSessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -119,7 +121,6 @@ class VideoPlayerVC: UIViewController {
 #else
         avPlayer?.play()
 #endif
-        restorePosition()
         if let r = reporter, !r.isStarted {
             r.begin { [weak self] in
                 guard let self = self else { return nil }
@@ -307,6 +308,11 @@ class VideoPlayerVC: UIViewController {
         player.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         player.controlStyle = isAudio ? .embedded : .fullscreen
         player.shouldAutoplay = false
+        if hasResumePoint {
+            // The player then asks for the segment holding it first, instead of loading the
+            // film's opening one and seeking away from it (~1 MB, ~1 s on the 4S).
+            player.initialPlaybackTime = startPosition
+        }
         if isAudio { player.view.backgroundColor = .clear }
         view.addSubview(player.view)
         player.prepareToPlay()
@@ -342,6 +348,7 @@ class VideoPlayerVC: UIViewController {
         if s.contains(.playthroughOK) { flags.append("playthroughOK") }
         if s.contains(.stalled) { flags.append("stalled") }
         DebugLog.shared.log("Player", "loadState=[\(flags.isEmpty ? "none" : flags.joined(separator: "|"))] raw=\(s.rawValue)")
+        if s.contains(.playable) { confirmStartPosition() }
         if s.contains(.playable) && !s.contains(.stalled) {
             bufferSpinner.stopAnimating()
         } else {
@@ -376,12 +383,8 @@ class VideoPlayerVC: UIViewController {
         return p.playbackState == .playing && p.loadState.contains(.playable)
     }
 
-    private func restorePosition() {
-        let saved = startPosition
-        guard saved > 10 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.player?.currentPlaybackTime = saved
-        }
+    private func seek(to seconds: Double) {
+        player?.currentPlaybackTime = seconds
     }
 
     // MARK: - iOS 8/9 player
@@ -389,7 +392,14 @@ class VideoPlayerVC: UIViewController {
 #else
     private func setupPlayer() {
         guard let url = resolvedPlaybackURL() else { return }
-        let avPlayer = AVPlayer(url: url)
+        let playerItem = AVPlayerItem(url: url)
+        if hasResumePoint {
+            // Before the item is opened, so loading starts at the resume point rather than at
+            // the film's opening segment. Without a completion handler: one isn't allowed
+            // until the item is ready.
+            playerItem.seek(to: CMTime(seconds: startPosition, preferredTimescale: 1000))
+        }
+        let avPlayer = AVPlayer(playerItem: playerItem)
         DebugLog.shared.log("Player", "AVPlayer created")
         self.avPlayer = avPlayer
         let playerVC = AVPlayerViewController()
@@ -434,6 +444,7 @@ class VideoPlayerVC: UIViewController {
         switch item.status {
         case .readyToPlay:
             DebugLog.shared.log("Player", "AVPlayerItem status=readyToPlay duration=\(String(format: "%.1f", item.duration.seconds))s")
+            DispatchQueue.main.async { self.confirmStartPosition() }
         case .failed:
             DebugLog.shared.log("Player", "AVPlayerItem status=FAILED \(describe(item.error as NSError?))")
         case .unknown:
@@ -470,13 +481,8 @@ class VideoPlayerVC: UIViewController {
         return current.status == .readyToPlay && p.rate > 0
     }
 
-    private func restorePosition() {
-        let saved = startPosition
-        guard saved > 10 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let player = self?.avPlayer else { return }
-            player.seek(to: CMTime(seconds: saved, preferredTimescale: 1000))
-        }
+    private func seek(to seconds: Double) {
+        avPlayer?.seek(to: CMTime(seconds: seconds, preferredTimescale: 1000))
     }
 #endif
 
@@ -529,14 +535,34 @@ class VideoPlayerVC: UIViewController {
 
     // MARK: - Shared
 
+    // Under 10 s isn't worth resuming, the same threshold savePosition() keeps to.
+    private var hasResumePoint: Bool { return startPosition > 10 }
+
+    // Once the stream has opened, the player should already stand at the resume point it
+    // was given before opening (to the segment boundary, a few seconds early at most). A
+    // stream that ignored it gets the old seek instead.
+    private func confirmStartPosition() {
+        guard !startConfirmed else { return }
+        startConfirmed = true
+        guard hasResumePoint else { return }
+        let target = startPosition
+        if let t = playerTime(), abs(t - target) < 15 {
+            DebugLog.shared.log("Player", "opened at \(String(format: "%.1f", t))s for resume point \(String(format: "%.1f", target))s")
+            return
+        }
+        let at = playerTime().map { String(format: "%.1f", $0) } ?? "?"
+        DebugLog.shared.log("Player", "opened at \(at)s, not at resume point \(String(format: "%.1f", target))s — seeking there")
+        seek(to: target)
+    }
+
     private func savePosition() {
         guard let t = playerTime(), t > 10 else { return }
         ResumeStore.save(t, for: item.id)
     }
 
     // The position the reports carry. Under 10 s doesn't count, same as savePosition:
-    // backing out before the 1.5 s resume seek has landed must report the resume point,
-    // not wipe it on the server.
+    // backing out before the player has reached the resume point must report the resume
+    // point, not wipe it on the server.
     private func reportablePosition() -> Double {
         if let t = playerTime(), t > 10 { return t }
         return startPosition
