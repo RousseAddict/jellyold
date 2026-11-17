@@ -1,11 +1,15 @@
 import UIKit
 
-// MARK: - DownloadQuality
-// "Original" requests Jellyfin's static (no-transcode) remux — full quality, near-zero
-// server CPU, but only possible when no painted-in (image) subtitle or non-default audio
-// track is selected (those require a real transcode to apply). The transcode tiers cap resolution
-// and bitrate so a movie download doesn't consume unnecessary space/time on these devices.
-private enum DownloadQuality: CaseIterable, Equatable {
+// MARK: - VideoQuality
+// For a download or a cast, "Original" requests Jellyfin's static (no-transcode) remux —
+// full quality, near-zero server CPU, but only possible when no painted-in (image) subtitle
+// or non-default audio track is selected (those require a real transcode to apply). The
+// transcode tiers cap resolution and bitrate so a movie download doesn't consume
+// unnecessary space/time on these devices.
+// For playing on the device, "Original" is the player's own ceiling and the tiers are
+// ceilings too: a file already within one still streams untouched, anything above it is
+// converted down to it. That choice is remembered for every video (`playback`).
+enum VideoQuality: String, CaseIterable, Equatable {
     case original, q720, q480, q360
 
     var label: String {
@@ -15,6 +19,28 @@ private enum DownloadQuality: CaseIterable, Equatable {
         case .q480: return "480p \u{00b7} 2 Mbps"
         case .q360: return "360p \u{00b7} 1 Mbps"
         }
+    }
+    // The playback sheet: "Original" can still mean a conversion there (an HEVC file).
+    var playbackLabel: String {
+        return self == .original ? "Best (original when possible)" : label
+    }
+    // The detail page's Quality row.
+    var shortLabel: String {
+        switch self {
+        case .original: return "Best"
+        case .q720: return "720p"
+        case .q480: return "480p"
+        case .q360: return "360p"
+        }
+    }
+
+    private static let playbackKey = "playbackQuality"
+    // What the player streams at, for every video: the link is what it's chosen for.
+    static var playback: VideoQuality {
+        get {
+            return UserDefaults.standard.string(forKey: playbackKey).flatMap { VideoQuality(rawValue: $0) } ?? .original
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: playbackKey) }
     }
     var maxWidth: Int? {
         switch self {
@@ -107,9 +133,10 @@ class ItemDetailVC: UIViewController {
 #if IOS6_TARGET
     private var pendingAudioOptions: [Int] = []
     private var pendingSubtitleOptions: [Int?] = []
-    private var pendingDownloadQualities: [DownloadQuality] = []
+    private var pendingDownloadQualities: [VideoQuality] = []
     private var pendingCastDevices: [CastDevice] = []
-    private var pendingCastQualities: [DownloadQuality] = []
+    private var pendingCastQualities: [VideoQuality] = []
+    private var pendingPlaybackQualities: [VideoQuality] = []
     private var activeActionSheet: UIActionSheet?
 #endif
 
@@ -475,7 +502,9 @@ class ItemDetailVC: UIViewController {
     }
 
     // Audio and subtitle choices as rows showing the current pick. Choosing anything but
-    // the file's defaults makes the server transcode, which a line under them says.
+    // the file's defaults makes the server transcode, which a line under them says. Then
+    // the playback quality, the same for every video, left out when the downloaded copy
+    // is what plays.
     private func buildTrackRows(x: CGFloat, y startY: CGFloat, width w: CGFloat) -> CGFloat {
         var y = startY
         let audioStreams = mediaStreams.filter { $0.isAudio }
@@ -493,6 +522,12 @@ class ItemDetailVC: UIViewController {
             } ?? "Off"
             let row = makeChoiceRow("Subtitles", value: value, frame: CGRect(x: x, y: y, width: w, height: 40))
             row.addTarget(self, action: #selector(subtitleTapped), for: .touchUpInside)
+            y += 40 + 8
+        }
+        if !DownloadManager.isDownloaded(item.id) {
+            let row = makeChoiceRow("Quality", value: VideoQuality.playback.shortLabel,
+                                    frame: CGRect(x: x, y: y, width: w, height: 40))
+            row.addTarget(self, action: #selector(qualityTapped), for: .touchUpInside)
             y += 40 + 8
         }
         if forceTranscode {
@@ -750,6 +785,35 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
+    // Every tier is offered whatever the tracks: they're ceilings, and a chosen track is
+    // applied by the conversion they lead to anyway.
+    @objc private func qualityTapped() {
+        let current = VideoQuality.playback
+#if IOS6_TARGET
+        pendingPlaybackQualities = VideoQuality.allCases
+        let sheet = UIActionSheet(title: "Playback Quality", delegate: self,
+                                  cancelButtonTitle: nil, destructiveButtonTitle: nil)
+        sheet.tag = 8
+        for q in VideoQuality.allCases {
+            sheet.addButton(withTitle: (q == current ? "✓ " : "") + q.playbackLabel)
+        }
+        sheet.addButton(withTitle: "Cancel")
+        sheet.cancelButtonIndex = sheet.numberOfButtons - 1
+        activeActionSheet = sheet
+        sheet.show(in: view)
+#else
+        let alert = UIAlertController(title: "Playback Quality", message: nil, preferredStyle: .actionSheet)
+        for q in VideoQuality.allCases {
+            alert.addAction(UIAlertAction(title: (q == current ? "✓ " : "") + q.playbackLabel, style: .default) { [weak self] _ in
+                VideoQuality.playback = q
+                self?.forceRebuild()
+            })
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
+#endif
+    }
+
     @objc private func playTapped() { play(startOver: false) }
     @objc private func playFromStartTapped() { play(startOver: true) }
 
@@ -929,7 +993,7 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
-    private func beginCast(quality: DownloadQuality?) {
+    private func beginCast(quality: VideoQuality?) {
         guard let device = pendingCastDevice else { return }
         pendingCastDevice = nil
 
@@ -963,7 +1027,7 @@ class ItemDetailVC: UIViewController {
     // transcode head makes Jellyfin restart ffmpeg there. The progressive mp4 is kept as a
     // fallback for a receiver that rejects the playlist; being chunked with no length it can
     // only play forward, so seeking re-requests it from the new position.
-    private func videoCastSources(quality: DownloadQuality) -> [CastSource] {
+    private func videoCastSources(quality: VideoQuality) -> [CastSource] {
         let itemId = item.id
         let audioIndex = selectedAudioIndex
         let subtitleIndex = burnedInSubtitleIndex
@@ -994,7 +1058,7 @@ class ItemDetailVC: UIViewController {
         }]
     }
 
-    private static func hlsURL(itemId: String, quality: DownloadQuality,
+    private static func hlsURL(itemId: String, quality: VideoQuality,
                                audioIndex: Int?, subtitleIndex: Int?) -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
@@ -1119,10 +1183,10 @@ class ItemDetailVC: UIViewController {
     // subtitle in. A text subtitle never needs painting — a download keeps it as a file
     // beside the video, and a Chromecast draws it from WebVTT — so only an image one rules
     // Original out. Shared by the download and cast sheets.
-    private var availableQualities: [DownloadQuality] {
+    private var availableQualities: [VideoQuality] {
         let originalOK = burnedInSubtitleIndex == nil
             && (selectedAudioIndex == nil || selectedAudioIndex == defaultAudioIndex)
-        var list: [DownloadQuality] = originalOK ? [.original] : []
+        var list: [VideoQuality] = originalOK ? [.original] : []
         list.append(contentsOf: [.q720, .q480, .q360])
         return list
     }
@@ -1152,7 +1216,7 @@ class ItemDetailVC: UIViewController {
     }
 
     // A download's video: only an image subtitle is painted in, a text one is saved beside it.
-    private func streamURL(quality: DownloadQuality) -> URL? {
+    private func streamURL(quality: VideoQuality) -> URL? {
         return ItemDetailVC.streamURL(itemId: item.id, quality: quality, audioIndex: selectedAudioIndex,
                                       subtitleIndex: burnedInSubtitleIndex, startTime: 0)
     }
@@ -1160,7 +1224,7 @@ class ItemDetailVC: UIViewController {
     // Shared by the download and the cast-fallback paths — both want a plain, self-contained
     // mp4 the fetcher (the phone, or the Chromecast) can pull over HTTP. `startTime` starts
     // the stream mid-file (honoured because Direct Play is off, so it always goes through ffmpeg).
-    private static func streamURL(itemId: String, quality: DownloadQuality, audioIndex: Int?,
+    private static func streamURL(itemId: String, quality: VideoQuality, audioIndex: Int?,
                                   subtitleIndex: Int?, startTime: Double) -> URL? {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
@@ -1195,7 +1259,7 @@ class ItemDetailVC: UIViewController {
         return URL(string: "\(serverURL)/Videos/\(itemId)/stream.mp4?\(params.joined(separator: "&"))")
     }
 
-    private func beginDownload(quality: DownloadQuality) {
+    private func beginDownload(quality: VideoQuality) {
         guard let url = streamURL(quality: quality) else { return }
         var textSubtitle: Int?
         if case .drawn(let index)? = subtitleChoice { textSubtitle = index }
@@ -1256,6 +1320,10 @@ extension ItemDetailVC: UIActionSheetDelegate {
             beginCast(quality: pendingCastQualities[buttonIndex])
         case 7:
             setPlayed(true)
+        case 8:
+            guard buttonIndex < pendingPlaybackQualities.count else { return }
+            VideoQuality.playback = pendingPlaybackQualities[buttonIndex]
+            forceRebuild()
         default:
             break
         }

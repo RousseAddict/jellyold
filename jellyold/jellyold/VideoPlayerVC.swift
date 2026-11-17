@@ -36,6 +36,8 @@ class VideoPlayerVC: UIViewController {
     // it gets converted, so it sits over the 10–13 Mbps of most 1080p files.
     private static let maxVideoBitrate = 20_000_000
     private static let maxVideoWidth = 1920
+    // The detail page's Quality choice: a lower tier replaces both ceilings above.
+    private let quality = VideoQuality.playback
     private var reporter: PlaybackReporter?
     // Played to the end: the teardown that follows must not save or report a position.
     private var didFinish = false
@@ -206,7 +208,7 @@ class VideoPlayerVC: UIViewController {
         case .burnedIn?: subMode = "burnedIn"
         case nil:        subMode = "off"
         }
-        DebugLog.shared.log("Player", "OPEN \"\(item.name)\" type=\(item.type) id=\(item.id) device=\(dev.model)/\(dev.systemVersion) forceTranscode=\(forceTranscode) audioIdx=\(selectedAudioIndex ?? -1) subIdx=\(subtitle?.index ?? -1) sub=\(subMode) downloaded=\(DownloadManager.isDownloaded(item.id))")
+        DebugLog.shared.log("Player", "OPEN \"\(item.name)\" type=\(item.type) id=\(item.id) device=\(dev.model)/\(dev.systemVersion) forceTranscode=\(forceTranscode) audioIdx=\(selectedAudioIndex ?? -1) subIdx=\(subtitle?.index ?? -1) sub=\(subMode) quality=\(quality.shortLabel) downloaded=\(DownloadManager.isDownloaded(item.id))")
         guard let remote = buildStreamURL() else {
             // Only reachable when serverURL/accessToken/userId is missing.
             DebugLog.shared.log("Player", "no stream URL — server=\(JellyfinServer.serverURL ?? "nil") token=\(JellyfinServer.accessToken == nil ? "nil" : "set") userId=\(JellyfinServer.userId == nil ? "nil" : "set")")
@@ -255,9 +257,10 @@ class VideoPlayerVC: UIViewController {
                 "MediaSourceId=\(item.id)",
                 "DeviceId=jellyold-device-01",
                 // master.m3u8 reads only these two (not MaxStreamingBitrate): without them
-                // Jellyfin converts at its smallest size, 416 px / 256 kbps.
-                "VideoBitRate=\(VideoPlayerVC.maxVideoBitrate)",
-                "MaxWidth=\(VideoPlayerVC.maxVideoWidth)",
+                // Jellyfin converts at its smallest size, 416 px / 256 kbps. A file within
+                // both is still streamed untouched; one above either is converted.
+                "VideoBitRate=\(quality.videoBitrate ?? VideoPlayerVC.maxVideoBitrate)",
+                "MaxWidth=\(quality.maxWidth ?? VideoPlayerVC.maxVideoWidth)",
                 "VideoCodec=h264",
                 // What the A5/A6 decoder is rated for (1080p30, level 4.1). Without these
                 // Jellyfin passes a 1080p50 or level 5.1 H.264 file along untouched.
@@ -269,6 +272,12 @@ class VideoPlayerVC: UIViewController {
                 // conversion an HEVC file needs even with no track chosen.
                 "PlaySessionId=\(playSessionId)"
             ]
+            if let audioBitrate = quality.audioBitrate {
+                // Kept 5.1, the converted sound gets ~20 kbps a channel at these rates; the
+                // phone only plays stereo anyway.
+                params.append("AudioBitRate=\(audioBitrate)")
+                params.append("MaxAudioChannels=2")
+            }
             if forceTranscode {
                 params.append("EnableDirectStream=false")
                 params.append("EnableDirectPlay=false")
