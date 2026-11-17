@@ -183,7 +183,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: .barButton(navigationItem.rightBarButtonItem))
 #endif
     }
 
@@ -346,10 +346,11 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
               let ip = collectionView.indexPathForItem(at: g.location(in: collectionView)),
               ip.item < items.count,
               items[ip.item].type == "Audio" else { return }
-        showAudioSheet(at: ip.item)
+        showAudioSheet(at: ip.item, from: collectionView.cellForItem(at: ip))
     }
 
-    private func showAudioSheet(at index: Int) {
+    // `cell`: what the menu points at on an iPad.
+    private func showAudioSheet(at index: Int, from cell: UIView?) {
         let item = items[index]
 #if IOS6_TARGET
         let sheet = UIActionSheet(title: item.name, delegate: self,
@@ -377,7 +378,7 @@ class ItemListVC: UIViewController, UICollectionViewDataSource, UICollectionView
             self?.navigationController?.pushViewController(ItemDetailVC(item: item), animated: true)
         })
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: .view(cell))
 #endif
     }
 }

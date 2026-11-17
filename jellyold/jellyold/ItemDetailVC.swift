@@ -741,7 +741,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: sender)
+        presentSheet(alert, from: .view(sender))
 #endif
     }
 
@@ -781,7 +781,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: sender)
+        presentSheet(alert, from: .view(sender))
 #endif
     }
 
@@ -810,7 +810,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: sender)
+        presentSheet(alert, from: .view(sender))
 #endif
     }
 
@@ -898,41 +898,6 @@ class ItemDetailVC: UIViewController {
         }
     }
 
-#if !IOS6_TARGET
-    // Every action sheet on this page. On an iPad it is a popover, which iOS 8 has to be
-    // told where to point: without that, choosing a TV in "Cast to…" never led to a cast.
-    // It points at the button or row that opened it. A sheet asked for while another is
-    // still on screen waits for it to go, since UIKit would drop it.
-    private func presentSheet(_ alert: UIAlertController, from anchor: UIView?, attempt: Int = 0) {
-        if presentedViewController != nil {
-            if attempt == 0 {
-                DebugLog.shared.log("UI", "sheet \"\(alert.title ?? "")\" waits for the previous one to close")
-            }
-            guard attempt < 30 else {
-                DebugLog.shared.log("UI", "sheet \"\(alert.title ?? "")\" dropped: the previous one never closed")
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.presentSheet(alert, from: anchor, attempt: attempt + 1)
-            }
-            return
-        }
-        if let popover = alert.popoverPresentationController {
-            // The anchor can have been rebuilt away (a page refresh while the Chromecast
-            // search ran): then the middle of the page, without an arrow.
-            if let source = anchor, source.window != nil {
-                popover.sourceView = source
-                popover.sourceRect = source.bounds
-            } else {
-                popover.sourceView = view
-                popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
-            }
-        }
-        present(alert, animated: true)
-    }
-#endif
-
     private func showMessage(_ title: String, _ message: String) {
 #if IOS6_TARGET
         UIAlertView(title: title, message: message, delegate: nil, cancelButtonTitle: "OK").show()
@@ -989,7 +954,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: castBtn)
+        presentSheet(alert, from: .view(castBtn))
 #endif
     }
 
@@ -1025,7 +990,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: castBtn)
+        presentSheet(alert, from: .view(castBtn))
 #endif
     }
 
@@ -1247,7 +1212,7 @@ class ItemDetailVC: UIViewController {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        presentSheet(alert, from: downloadBtn)
+        presentSheet(alert, from: .view(downloadBtn))
 #endif
     }
 

@@ -204,7 +204,7 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
             })
         }
         alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
+        presentSheet(alert, from: .barButton(navigationItem.rightBarButtonItem))
 #endif
     }
 
