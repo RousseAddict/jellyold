@@ -31,9 +31,10 @@ class VideoPlayerVC: UIViewController {
     // job, and in every report.
     private let playSessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
     // The most a server conversion may use (HEVC files, burned-in subtitles). Jellyfin never
-    // goes above the source, and a file already within them still streams untouched — the
-    // 4S and iPad mini play 1080p H.264.
-    private static let maxVideoBitrate = 8_000_000
+    // goes above the source, and an H.264 file within them still streams untouched — the
+    // 4S and iPad mini play 1080p H.264. The bitrate also decides that: an H.264 file above
+    // it gets converted, so it sits over the 10–13 Mbps of most 1080p files.
+    private static let maxVideoBitrate = 20_000_000
     private static let maxVideoWidth = 1920
     private var reporter: PlaybackReporter?
     // Played to the end: the teardown that follows must not save or report a position.
@@ -258,6 +259,10 @@ class VideoPlayerVC: UIViewController {
                 "VideoBitRate=\(VideoPlayerVC.maxVideoBitrate)",
                 "MaxWidth=\(VideoPlayerVC.maxVideoWidth)",
                 "VideoCodec=h264",
+                // What the A5/A6 decoder is rated for (1080p30, level 4.1). Without these
+                // Jellyfin passes a 1080p50 or level 5.1 H.264 file along untouched.
+                "h264-level=41",
+                "MaxFramerate=30",
                 "AudioCodec=aac",
                 // Unique per playback: Jellyfin can't reuse a cached session for this DeviceId
                 // (which would ignore the track params), and the stop report ends the
