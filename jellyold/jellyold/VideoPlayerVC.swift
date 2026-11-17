@@ -472,8 +472,8 @@ class VideoPlayerVC: UIViewController {
         guard case .drawn(let index)? = subtitle else { return }
         let overlay = SubtitleOverlayView(frame: view.bounds)
 #if IOS6_TARGET
-        // Over the player's view, its controls included: the overlay ignores touches, and
-        // the controls fade out during playback.
+        // Over the player's view, its controls included: the overlay ignores touches and
+        // lifts the line above the controls while they show (showCurrentCue).
         guard let playerView = player?.view else { return }
         view.insertSubview(overlay, aboveSubview: playerView)
 #else
@@ -500,7 +500,17 @@ class VideoPlayerVC: UIViewController {
     }
 
     private func showCurrentCue() {
-        subtitleOverlay?.text = playerTime().flatMap { subtitleTrack?.text(at: $0) }
+        guard let overlay = subtitleOverlay else { return }
+        let text = playerTime().flatMap { subtitleTrack?.text(at: $0) }
+        // Only while a line shows: where the controls are doesn't matter between lines.
+        if text != nil {
+#if IOS6_TARGET
+            if let playerView = player?.view { overlay.keepClear(of: playerView) }
+#else
+            if let playerView = playerVC?.view { overlay.keepClear(of: playerView) }
+#endif
+        }
+        overlay.text = text
     }
 
     // MARK: - Shared

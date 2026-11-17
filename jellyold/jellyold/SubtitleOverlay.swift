@@ -178,7 +178,8 @@ final class SubtitleTrack {
 // MARK: - SubtitleOverlayView
 //
 // The current cue near the bottom of the picture, white with a dark outline. It fills its
-// host and ignores touches, so taps still reach the player's controls under it.
+// host and ignores touches, so taps still reach the player's controls under it. While the
+// player's own controls show, it sits just above them.
 
 final class SubtitleOverlayView: UIView {
     private let label = UILabel()
@@ -186,6 +187,15 @@ final class SubtitleOverlayView: UIView {
 
     var text: String? {
         didSet { if text != oldValue { render() } }
+    }
+
+    // Top of the player's bottom controls in this view, nil while they're faded out.
+    private var controlsTop: CGFloat? {
+        didSet {
+            guard !label.isHidden else { return }      // placed when the next cue renders
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .curveEaseOut],
+                           animations: { self.place() }, completion: nil)
+        }
     }
 
     override init(frame: CGRect) {
@@ -241,9 +251,54 @@ final class SubtitleOverlayView: UIView {
         guard !label.isHidden else { return }
         let width = bounds.width * 0.9
         let height = label.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
-        let bottomGap = max(10, bounds.height * 0.06)
-        label.frame = CGRect(x: (bounds.width - width) / 2, y: bounds.height - bottomGap - height,
+        var bottom = bounds.height - max(10, bounds.height * 0.06)
+        if let top = controlsTop { bottom = min(bottom, top - 8) }
+        label.frame = CGRect(x: (bounds.width - width) / 2, y: bottom - height,
                              width: width, height: height)
+    }
+
+    // MARK: Keeping clear of the player's controls
+    //
+    // Neither MPMoviePlayerController nor AVPlayerViewController says when its controls show,
+    // so look for them: buttons and sliders inside `playerView` that are on screen in the
+    // lower half, each widened to the largest box around it still wholly in that half (the
+    // bar behind the buttons). Public view properties only; finding nothing leaves the
+    // subtitle where it always sits.
+
+    func keepClear(of playerView: UIView) {
+        var found: (top: CGFloat, box: UIView)?
+        findControls(in: playerView, root: playerView, found: &found)
+        let top = found.map { $0.top.rounded() }
+        // A bar sliding in reports a new top every tick; small steps aren't worth a move.
+        if let a = top, let b = controlsTop, abs(a - b) < 4 { return }
+        if top == nil && controlsTop == nil { return }
+        if let f = found {
+            DebugLog.shared.log("Subtitles", "controls showing, top \(Int(f.top)) of \(Int(bounds.height)) (\(NSStringFromClass(type(of: f.box))))")
+        } else {
+            DebugLog.shared.log("Subtitles", "controls hidden")
+        }
+        controlsTop = top
+    }
+
+    private func findControls(in view: UIView, root: UIView, found: inout (top: CGFloat, box: UIView)?) {
+        if view === self || view.isHidden || view.alpha < 0.01 { return }
+        guard view is UIControl else {
+            for sub in view.subviews { findControls(in: sub, root: root, found: &found) }
+            return
+        }
+        let half = bounds.height * 0.5
+        var rect = view.convert(view.bounds, to: self)
+        guard rect.width > 0, rect.height > 0, rect.intersects(bounds), rect.midY > half else { return }
+        var box: UIView = view
+        var parent = view.superview
+        while let p = parent, p !== root {
+            let r = p.convert(p.bounds, to: self)
+            if r.minY <= half { break }
+            if r.height > 0 { rect = r; box = p }
+            parent = p.superview
+        }
+        if let f = found, f.top <= rect.minY { return }
+        found = (rect.minY, box)
     }
 }
 
