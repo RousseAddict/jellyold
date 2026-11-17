@@ -194,6 +194,9 @@ struct MediaStream {
     let displayTitle: String
     let isDefault: Bool
     let isExternal: Bool
+    // A subtitle the server can hand over as text (SRT, ASS, VTT, mov_text…), which the
+    // player draws itself; an image one (PGS, VobSub) has to be painted into the video.
+    let isTextSubtitle: Bool
 
     var isAudio: Bool    { type == "Audio" }
     var isSubtitle: Bool { type == "Subtitle" }
@@ -208,7 +211,9 @@ struct MediaStream {
         self.displayTitle = json["DisplayTitle"] as? String
             ?? json["Language"] as? String
             ?? "Track \(index)"
-        self.isDefault  = json["IsDefault"]  as? Bool ?? false
-        self.isExternal = json["IsExternal"] as? Bool ?? false
+        // NSNumber path: a bare `as? Bool` silently fails on the 5.1.5 runtime.
+        self.isDefault  = (json["IsDefault"]  as? NSNumber)?.boolValue ?? false
+        self.isExternal = (json["IsExternal"] as? NSNumber)?.boolValue ?? false
+        self.isTextSubtitle = (json["IsTextSubtitleStream"] as? NSNumber)?.boolValue ?? false
     }
 }

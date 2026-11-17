@@ -186,7 +186,9 @@ class DownloadsVC: UIViewController, UITableViewDataSource, UITableViewDelegate 
             navigationController?.pushViewController(NowPlayingVC(), animated: true)
             return
         }
-        navigationController?.pushViewController(VideoPlayerVC(item: item), animated: true)
+        // With the subtitle saved beside it, if one was chosen for the download.
+        let subtitle = DownloadManager.subtitleIndex(for: item.id).map { SubtitleChoice.drawn($0) }
+        navigationController?.pushViewController(VideoPlayerVC(item: item, subtitle: subtitle), animated: true)
     }
 }
 

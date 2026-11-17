@@ -12,8 +12,14 @@ class VideoPlayerVC: UIViewController {
     private let streamProxy = LocalStreamProxy()
 
     private var selectedAudioIndex: Int?        // Jellyfin stream index — AudioStreamIndex URL param
-    private var selectedSubtitleIndex: Int?     // Jellyfin stream index — SubtitleStreamIndex URL param
+    private let subtitle: SubtitleChoice?       // drawn here, or SubtitleStreamIndex URL param
     private var forceTranscode: Bool            // forces Jellyfin to transcode and honour stream index params
+
+    // A drawn subtitle: the track once loaded, the view showing it, and the timer keeping
+    // it in step with the player.
+    private var subtitleTrack: SubtitleTrack?
+    private var subtitleOverlay: SubtitleOverlayView?
+    private var subtitleTimer: Timer?
 
     // Jellyfin's view of this item as the detail page loaded it, weighed against this
     // device's own resume point (ResumeStore) to pick where playback starts.
@@ -45,13 +51,13 @@ class VideoPlayerVC: UIViewController {
 
     init(item: MediaItem,
          audioIndex: Int? = nil,
-         subtitleIndex: Int? = nil,
+         subtitle: SubtitleChoice? = nil,
          forceTranscode: Bool = false,
          serverState: ServerPlayState? = nil,
          startOver: Bool = false) {
         self.item = item
         self.selectedAudioIndex = audioIndex
-        self.selectedSubtitleIndex = subtitleIndex
+        self.subtitle = subtitle
         self.forceTranscode = forceTranscode
         self.serverState = serverState
         self.startOver = startOver
@@ -73,13 +79,15 @@ class VideoPlayerVC: UIViewController {
         if isAudio { setupArtwork() }
         setupPlayer()
         setupBufferSpinner()
+        setupSubtitles()
         if !isAudio {
-            // Track choices only reach the server in the forced-transcode URL.
+            // An audio choice only reaches the server in the forced-transcode URL; a
+            // subtitle shows either way.
             reporter = PlaybackReporter(
                 item: item, playSessionId: playSessionId,
                 playMethod: DownloadManager.isDownloaded(item.id) ? "DirectPlay" : "Transcode",
                 audioIndex: forceTranscode ? selectedAudioIndex : nil,
-                subtitleIndex: forceTranscode ? selectedSubtitleIndex : nil)
+                subtitleIndex: subtitle?.index)
         }
     }
 
@@ -141,6 +149,9 @@ class VideoPlayerVC: UIViewController {
             reporter?.stop(at: reportablePosition())
         }
         reporter = nil
+        subtitleTimer?.invalidate()
+        subtitleTimer = nil
+        subtitleOverlay = nil       // a track still loading then finds nothing to start
         NotificationCenter.default.removeObserver(self)
 #if IOS6_TARGET
         player?.stop()
@@ -188,7 +199,13 @@ class VideoPlayerVC: UIViewController {
     // reverse proxies require.
     private func resolvedPlaybackURL() -> URL? {
         let dev = UIDevice.current
-        DebugLog.shared.log("Player", "OPEN \"\(item.name)\" type=\(item.type) id=\(item.id) device=\(dev.model)/\(dev.systemVersion) forceTranscode=\(forceTranscode) audioIdx=\(selectedAudioIndex ?? -1) subIdx=\(selectedSubtitleIndex ?? -1) downloaded=\(DownloadManager.isDownloaded(item.id))")
+        let subMode: String
+        switch subtitle {
+        case .drawn?:    subMode = "drawn"
+        case .burnedIn?: subMode = "burnedIn"
+        case nil:        subMode = "off"
+        }
+        DebugLog.shared.log("Player", "OPEN \"\(item.name)\" type=\(item.type) id=\(item.id) device=\(dev.model)/\(dev.systemVersion) forceTranscode=\(forceTranscode) audioIdx=\(selectedAudioIndex ?? -1) subIdx=\(subtitle?.index ?? -1) sub=\(subMode) downloaded=\(DownloadManager.isDownloaded(item.id))")
         guard let remote = buildStreamURL() else {
             // Only reachable when serverURL/accessToken/userId is missing.
             DebugLog.shared.log("Player", "no stream URL — server=\(JellyfinServer.serverURL ?? "nil") token=\(JellyfinServer.accessToken == nil ? "nil" : "set") userId=\(JellyfinServer.userId == nil ? "nil" : "set")")
@@ -253,7 +270,7 @@ class VideoPlayerVC: UIViewController {
                 if let audioIdx = selectedAudioIndex {
                     params.append("AudioStreamIndex=\(audioIdx)")
                 }
-                if let subIdx = selectedSubtitleIndex {
+                if case .burnedIn(let subIdx)? = subtitle {
                     params.append("SubtitleStreamIndex=\(subIdx)")
                     params.append("SubtitleMethod=Encode")
                 }
@@ -448,6 +465,43 @@ class VideoPlayerVC: UIViewController {
         }
     }
 #endif
+
+    // MARK: - Drawn subtitles
+
+    private func setupSubtitles() {
+        guard case .drawn(let index)? = subtitle else { return }
+        let overlay = SubtitleOverlayView(frame: view.bounds)
+#if IOS6_TARGET
+        // Over the player's view, its controls included: the overlay ignores touches, and
+        // the controls fade out during playback.
+        guard let playerView = player?.view else { return }
+        view.insertSubview(overlay, aboveSubview: playerView)
+#else
+        // Between the picture and AVKit's controls.
+        guard let host = playerVC?.contentOverlayView else { return }
+        overlay.frame = host.bounds
+        host.addSubview(overlay)
+#endif
+        subtitleOverlay = overlay
+        SubtitleTrack.load(itemId: item.id, index: index) { [weak self] track in
+            guard let self = self, let overlay = self.subtitleOverlay else { return }
+            guard let track = track else {
+                overlay.text = "Subtitles couldn't be loaded"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak overlay] in overlay?.text = nil }
+                return
+            }
+            self.subtitleTrack = track
+            let timer = Timer(timeInterval: 0.1, target: SubtitleTicker { [weak self] in self?.showCurrentCue() },
+                              selector: #selector(SubtitleTicker.fire), userInfo: nil, repeats: true)
+            // .common: keeps running while the scrubber is dragged.
+            RunLoop.main.add(timer, forMode: .common)
+            self.subtitleTimer = timer
+        }
+    }
+
+    private func showCurrentCue() {
+        subtitleOverlay?.text = playerTime().flatMap { subtitleTrack?.text(at: $0) }
+    }
 
     // MARK: - Shared
 

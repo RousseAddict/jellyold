@@ -2,8 +2,8 @@ import UIKit
 
 // MARK: - DownloadQuality
 // "Original" requests Jellyfin's static (no-transcode) remux — full quality, near-zero
-// server CPU, but only possible when no burned-in subtitle or non-default audio track is
-// selected (those require a real transcode to apply). The transcode tiers cap resolution
+// server CPU, but only possible when no painted-in (image) subtitle or non-default audio
+// track is selected (those require a real transcode to apply). The transcode tiers cap resolution
 // and bitrate so a movie download doesn't consume unnecessary space/time on these devices.
 private enum DownloadQuality: CaseIterable, Equatable {
     case original, q720, q480, q360
@@ -73,10 +73,26 @@ class ItemDetailVC: UIViewController {
         return item.type == "Audio" ? 0 : ResumeStore.startPosition(for: item.id, server: serverState)
     }
 
-    // Jellyfin only applies a track choice in a full transcode (a remux keeps the file's
-    // default tracks), so choosing one is what turns it on.
+    // A text subtitle is drawn by the player; an image one is painted in by the server.
+    // Without the track list (offline) the pick can only be the subtitle saved with the
+    // download, which is always text.
+    private var subtitleChoice: SubtitleChoice? {
+        guard let index = selectedSubtitleIndex else { return nil }
+        if let stream = mediaStreams.first(where: { $0.index == index }), !stream.isTextSubtitle {
+            return .burnedIn(index)
+        }
+        return .drawn(index)
+    }
+
+    private var burnedInSubtitleIndex: Int? {
+        if case .burnedIn(let index)? = subtitleChoice { return index }
+        return nil
+    }
+
+    // Jellyfin only applies an audio track or paints a subtitle in a full transcode (a remux
+    // keeps the file's default tracks), so choosing one is what turns it on.
     private var forceTranscode: Bool {
-        return selectedSubtitleIndex != nil
+        return burnedInSubtitleIndex != nil
             || (selectedAudioIndex != nil && selectedAudioIndex != defaultAudioIndex)
     }
 
@@ -99,6 +115,10 @@ class ItemDetailVC: UIViewController {
 
     init(item: MediaItem) {
         self.item = item
+        // Downloaded with a subtitle: it's the one picked, and the only one offline.
+        if DownloadManager.isDownloaded(item.id) {
+            selectedSubtitleIndex = DownloadManager.subtitleIndex(for: item.id)
+        }
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -742,7 +762,7 @@ class ItemDetailVC: UIViewController {
         navigationController?.pushViewController(
             VideoPlayerVC(item: item,
                           audioIndex: selectedAudioIndex,
-                          subtitleIndex: selectedSubtitleIndex,
+                          subtitle: subtitleChoice,
                           forceTranscode: forceTranscode,
                           // The list's UserData covers a tap before getMediaInfo answers.
                           serverState: serverState,
@@ -886,7 +906,7 @@ class ItemDetailVC: UIViewController {
     }
 
     private func presentCastQualityPicker() {
-        let qualities = availableDownloadQualities
+        let qualities = availableCastQualities
 #if IOS6_TARGET
         pendingCastQualities = qualities
         let sheet = UIActionSheet(title: "Cast Quality", delegate: self,
@@ -1087,10 +1107,19 @@ class ItemDetailVC: UIViewController {
         updateDownloadButton()
     }
 
-    // "Original" is only offered when no subtitle or non-default audio track is selected —
-    // those require Jellyfin to burn in / transcode, which a static remux can't do.
+    // "Original" is a remux: it can't switch to a non-default audio track or paint a
+    // subtitle in. A download keeps a text subtitle as a file beside the video instead;
+    // a Chromecast has no app to draw one, so a cast paints in any subtitle.
     private var availableDownloadQualities: [DownloadQuality] {
-        let originalOK = selectedSubtitleIndex == nil
+        return qualities(paintsSubtitle: burnedInSubtitleIndex != nil)
+    }
+
+    private var availableCastQualities: [DownloadQuality] {
+        return qualities(paintsSubtitle: selectedSubtitleIndex != nil)
+    }
+
+    private func qualities(paintsSubtitle: Bool) -> [DownloadQuality] {
+        let originalOK = !paintsSubtitle
             && (selectedAudioIndex == nil || selectedAudioIndex == defaultAudioIndex)
         var list: [DownloadQuality] = originalOK ? [.original] : []
         list.append(contentsOf: [.q720, .q480, .q360])
@@ -1121,9 +1150,10 @@ class ItemDetailVC: UIViewController {
 #endif
     }
 
+    // A download's video: only an image subtitle is painted in, a text one is saved beside it.
     private func streamURL(quality: DownloadQuality) -> URL? {
         return ItemDetailVC.streamURL(itemId: item.id, quality: quality, audioIndex: selectedAudioIndex,
-                                      subtitleIndex: selectedSubtitleIndex, startTime: 0)
+                                      subtitleIndex: burnedInSubtitleIndex, startTime: 0)
     }
 
     // Shared by the download and the cast-fallback paths — both want a plain, self-contained
@@ -1166,7 +1196,9 @@ class ItemDetailVC: UIViewController {
 
     private func beginDownload(quality: DownloadQuality) {
         guard let url = streamURL(quality: quality) else { return }
-        DownloadManager.startDownload(item, url: url.absoluteString)
+        var textSubtitle: Int?
+        if case .drawn(let index)? = subtitleChoice { textSubtitle = index }
+        DownloadManager.startDownload(item, url: url.absoluteString, subtitleIndex: textSubtitle)
         updateDownloadButton()
         startDownloadPoll()
     }
