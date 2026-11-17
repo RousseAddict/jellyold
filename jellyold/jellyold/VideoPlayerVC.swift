@@ -24,6 +24,11 @@ class VideoPlayerVC: UIViewController {
     // One per playback: in the transcode URL, so the stop report also ends that ffmpeg
     // job, and in every report.
     private let playSessionId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    // The most a server conversion may use (HEVC files, burned-in subtitles). Jellyfin never
+    // goes above the source, and a file already within them still streams untouched — the
+    // 4S and iPad mini play 1080p H.264.
+    private static let maxVideoBitrate = 8_000_000
+    private static let maxVideoWidth = 1920
     private var reporter: PlaybackReporter?
     // Played to the end: the teardown that follows must not save or report a position.
     private var didFinish = false
@@ -231,14 +236,18 @@ class VideoPlayerVC: UIViewController {
                 "api_key=\(token)",
                 "MediaSourceId=\(item.id)",
                 "DeviceId=jellyold-device-01",
-                "MaxStreamingBitrate=8000000",
+                // master.m3u8 reads only these two (not MaxStreamingBitrate): without them
+                // Jellyfin converts at its smallest size, 416 px / 256 kbps.
+                "VideoBitRate=\(VideoPlayerVC.maxVideoBitrate)",
+                "MaxWidth=\(VideoPlayerVC.maxVideoWidth)",
                 "VideoCodec=h264",
-                "AudioCodec=aac"
+                "AudioCodec=aac",
+                // Unique per playback: Jellyfin can't reuse a cached session for this DeviceId
+                // (which would ignore the track params), and the stop report ends the
+                // conversion an HEVC file needs even with no track chosen.
+                "PlaySessionId=\(playSessionId)"
             ]
             if forceTranscode {
-                // A unique PlaySessionId prevents Jellyfin reusing a cached direct-stream
-                // session for the same DeviceId, which would silently ignore the params.
-                params.append("PlaySessionId=\(playSessionId)")
                 params.append("EnableDirectStream=false")
                 params.append("EnableDirectPlay=false")
                 if let audioIdx = selectedAudioIndex {
