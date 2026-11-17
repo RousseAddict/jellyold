@@ -16,9 +16,14 @@ import Darwin
 // Segments and direct audio streams are relayed as bytes arrive from curl's
 // write callback straight to the client socket (true streaming — nothing
 // buffered to RAM/disk; the blocking send() gives natural backpressure).
-// Master/variant playlists are the one exception: they're small text and
-// need to be fully parsed to rewrite URIs, so those are fetched whole via
-// CurlFetcher, rewritten, then sent.
+// Master/variant playlists are the one exception: they're fetched whole via
+// CurlFetcher, scanned for URIs the player can't resolve through the proxy by
+// itself, rewritten where needed, then sent.
+//
+// A playlist is served under a directory of its own, /<id>/<file name>, so
+// the player resolves its relative URIs (all of Jellyfin's) to
+// /<id>/<same relative path>; mirroredRoute() maps those back against the
+// playlist's remote URL. Only absolute, rooted or "../" URIs get a route each.
 //
 // Each accepted connection runs on its own raw NSThread (not a GCD queue) —
 // a connection blocks synchronously inside curl_easy_perform for the whole
@@ -32,6 +37,8 @@ final class LocalStreamProxy: NSObject {
 
     private let lock = NSLock()
     private var routes: [String: URL] = [:]
+    // A playlist's id -> its remote URL, for the URIs the player resolves under /<id>/.
+    private var bases: [String: URL] = [:]
     private var nextID = 0
     private var currentGen: UInt64 = 0
 
@@ -70,6 +77,7 @@ final class LocalStreamProxy: NSObject {
         let fd = listenSocket
         listenSocket = -1
         routes.removeAll()
+        bases.removeAll()
         lock.unlock()
         if fd >= 0 { close(fd) }
     }
@@ -156,11 +164,47 @@ final class LocalStreamProxy: NSObject {
                               extHint: String? = nil) -> String {
         lock.lock(); defer { lock.unlock() }
         nextID += 1
+        if isPlaylist {
+            // The file name only makes the log readable; a name that would need escaping in
+            // a URL path gets a stand-in.
+            let name = remoteURL.lastPathComponent as NSString
+            let plain = name.length > 5 && name.hasSuffix(".m3u8")
+                && name.rangeOfCharacter(from: LocalStreamProxy.plainNameChars.inverted).location == NSNotFound
+            let path = "/\(nextID)/" + (plain ? name as String : "index.m3u8")
+            routes[path] = remoteURL
+            bases[String(nextID)] = remoteURL
+            return path
+        }
         let urlExt = LocalStreamProxy.fileExtension(of: remoteURL)
         let ext = isPlaylist ? "m3u8" : (urlExt.isEmpty ? (extHint ?? "ts") : urlExt)
         let path = "/\(nextID).\(ext)"
         routes[path] = remoteURL
         return path
+    }
+
+    private static let plainNameChars =
+        CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+    // "/<id>/<relative URI>": a URI the player resolved against a playlist served at
+    // /<id>/…, resolved again against that playlist's remote URL.
+    private func mirroredRoute(for target: String) -> URL? {
+        let t = target as NSString
+        guard t.length > 3, t.hasPrefix("/") else { return nil }
+        let slash = t.range(of: "/", options: [], range: NSRange(location: 1, length: t.length - 1))
+        guard slash.location != NSNotFound else { return nil }
+        let id = t.substring(with: NSRange(location: 1, length: slash.location - 1))
+        lock.lock()
+        let base = bases[id]
+        lock.unlock()
+        guard let playlistURL = base else { return nil }
+        return URL(string: t.substring(from: slash.location + 1), relativeTo: playlistURL)?.absoluteURL
+    }
+
+    // "/<id>/…", as opposed to the flat "/<id>.<ext>" of a stream registered on its own.
+    private static func isMirrored(_ path: String) -> Bool {
+        let s = path as NSString
+        return s.length > 1
+            && s.range(of: "/", options: [], range: NSRange(location: 1, length: s.length - 1)).location != NSNotFound
     }
 
     static func isPlaylistURL(_ url: URL) -> Bool {
@@ -203,12 +247,12 @@ final class LocalStreamProxy: NSObject {
     private func handle(connection fd: Int32) {
         defer { close(fd) }
         let gen = generation
-        guard let head = readRequestHead(fd), let (path, rangeHeader) = parseRequest(head) else {
+        guard let head = readRequestHead(fd), let (path, target, rangeHeader) = parseRequest(head) else {
             DebugLog.shared.log("Proxy", "REQ unparseable request head — answering 400")
             sendStatusOnly(fd, "400 Bad Request")
             return
         }
-        guard let remote = route(for: path) else {
+        guard let remote = route(for: path) ?? mirroredRoute(for: target) else {
             DebugLog.shared.log("Proxy", "REQ \(path) -> 404 (no such route; \(routeCount) registered)")
             sendStatusOnly(fd, "404 Not Found")
             return
@@ -242,18 +286,22 @@ final class LocalStreamProxy: NSObject {
         return String(data: data, encoding: .isoLatin1)
     }
 
-    private func parseRequest(_ head: String) -> (path: String, rangeHeader: String?)? {
+    // The path without its query (routes are keyed by it) and the full request target
+    // (a mirrored URI needs its query).
+    private func parseRequest(_ head: String) -> (path: String, target: String, rangeHeader: String?)? {
         let lines = head.components(separatedBy: "\r\n")
         guard let requestLine = lines.first else { return nil }
         let parts = requestLine.split(separator: " ")
         guard parts.count >= 2 else { return nil }
-        var path = String(parts[1])
-        if let q = path.firstIndex(of: "?") { path = String(path[..<q]) }
+        let target = String(parts[1])
+        var path = target
+        let q = (target as NSString).range(of: "?")
+        if q.location != NSNotFound { path = (target as NSString).substring(to: q.location) }
         var rangeHeader: String?
         for line in lines.dropFirst() where line.lowercased().hasPrefix("range:") {
             rangeHeader = line
         }
-        return (path, rangeHeader)
+        return (path, target, rangeHeader)
     }
 
     private func sendStatusOnly(_ fd: Int32, _ status: String) {
@@ -287,41 +335,101 @@ final class LocalStreamProxy: NSObject {
         return Int((CFAbsoluteTimeGetCurrent() - t0) * 1000)
     }
 
-    // Resolves every non-comment URI line against the playlist's own remote
-    // URL and replaces it with a local proxy path, so nested playlists and
-    // segments get proxied (and, if themselves playlists, rewritten again)
-    // recursively.
+    // Gives a local route to each URI line the player couldn't resolve through the proxy
+    // by itself, and leaves the rest of the bytes as they are. Served under /<id>/, a
+    // playlist keeps its plain relative URIs; served flat (a stream that turned out to be
+    // a playlist), every URI is routed.
     //
-    // The variant/codec declarations are logged in this same pass rather than
-    // a separate one: a VOD playlist can carry 1000+ segments, and on an
-    // A4/A5 one extra walk over it is a second of dead time before playback
-    // can start. The logged lines are what to compare between a device that
-    // plays the item and one that doesn't.
+    // A VOD playlist can carry 2000+ segments, and parsing then registering each one cost
+    // ~1.3 ms on an A5 (3 s before playback could start), so this works on the raw bytes:
+    // memchr to each line end, a look at its first bytes. The variant/codec declarations
+    // are logged in this same pass — they're what to compare between a device that plays
+    // the item and one that doesn't.
     private func rewritePlaylist(_ data: Data, baseURL: URL, gen: UInt64, path: String) -> Data {
         let t0 = CFAbsoluteTimeGetCurrent()
-        guard let text = String(data: data, encoding: .utf8) else {
-            DebugLog.shared.log("Proxy", "PLAYLIST \(path) body is not UTF-8 — probably not a playlist at all")
-            return data
-        }
+        let keepRelative = LocalStreamProxy.isMirrored(path)
         var uriCount = 0
-        let lines = text.components(separatedBy: "\n")
-        let rewritten = lines.map { line -> String in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { return line }
-            if trimmed.hasPrefix("#") {
-                if trimmed.hasPrefix("#EXT-X-STREAM-INF") || trimmed.hasPrefix("#EXT-X-MEDIA")
-                    || trimmed.hasPrefix("#EXT-X-TARGETDURATION") || trimmed.hasPrefix("#EXT-X-PLAYLIST-TYPE")
-                    || trimmed.hasPrefix("#EXT-X-VERSION") {
-                    DebugLog.shared.log("Proxy", "PLAYLIST \(path) | \(trimmed)")
+        var routed: [(start: Int, end: Int, path: String)] = []
+        var tags: [String] = []
+        let isPlaylist: Bool = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            guard let start0 = raw.baseAddress else { return false }
+            let p = start0.assumingMemoryBound(to: UInt8.self)
+            let n = raw.count
+            var start = 0
+            while start < n {
+                var end = n
+                if let nl = memchr(p + start, 0x0A, n - start) {
+                    end = start0.distance(to: UnsafeRawPointer(nl))
                 }
-                return line
+                var s = start, e = end
+                while s < e, p[s] == 0x20 || p[s] == 0x09 { s += 1 }
+                while e > s, p[e - 1] == 0x0D || p[e - 1] == 0x20 || p[e - 1] == 0x09 { e -= 1 }
+                if s < e {
+                    if p[s] == 0x23 {
+                        // "#EXT-X-…" only: "#EXTINF" comes once per segment and isn't logged.
+                        if e - s > 7 && p[s + 1] == 0x45 && p[s + 4] == 0x2D {
+                            let tag = String(decoding: UnsafeBufferPointer(start: p + s, count: e - s), as: UTF8.self)
+                            if tag.hasPrefix("#EXT-X-STREAM-INF") || tag.hasPrefix("#EXT-X-MEDIA")
+                                || tag.hasPrefix("#EXT-X-TARGETDURATION") || tag.hasPrefix("#EXT-X-PLAYLIST-TYPE")
+                                || tag.hasPrefix("#EXT-X-VERSION") {
+                                tags.append(tag)
+                            }
+                        }
+                    } else {
+                        uriCount += 1
+                        if !(keepRelative && LocalStreamProxy.isPlainRelative(p + s, e - s)) {
+                            let uri = String(decoding: UnsafeBufferPointer(start: p + s, count: e - s), as: UTF8.self)
+                            if let resolved = URL(string: uri, relativeTo: baseURL)?.absoluteURL {
+                                routed.append((s, e, registerPath(for: resolved,
+                                                                  isPlaylist: LocalStreamProxy.isPlaylistURL(resolved),
+                                                                  gen: gen)))
+                            }
+                        }
+                    }
+                }
+                start = end + 1
             }
-            uriCount += 1
-            guard let resolved = URL(string: trimmed, relativeTo: baseURL)?.absoluteURL else { return line }
-            return registerPath(for: resolved, isPlaylist: LocalStreamProxy.isPlaylistURL(resolved), gen: gen)
+            // "#EXTM3U"
+            return n >= 7 && p[0] == 0x23 && p[1] == 0x45 && p[2] == 0x58 && p[3] == 0x54
+                && p[4] == 0x4D && p[5] == 0x33 && p[6] == 0x55
         }
-        DebugLog.shared.log("Proxy", "PLAYLIST \(path) rewrote \(uriCount) URI(s) in \(ms(since: t0))ms")
-        return Data(rewritten.joined(separator: "\n").utf8)
+        if !isPlaylist {
+            DebugLog.shared.log("Proxy", "PLAYLIST \(path) body doesn't start with #EXTM3U — probably not a playlist at all")
+        }
+        for tag in tags { DebugLog.shared.log("Proxy", "PLAYLIST \(path) | \(tag)") }
+        var body = data
+        if !routed.isEmpty {
+            let out = NSMutableData(capacity: data.count + routed.count * 16) ?? NSMutableData()
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let p = raw.baseAddress else { return }
+                var at = 0
+                for r in routed {
+                    out.append(p + at, length: r.start - at)
+                    let local = Array(r.path.utf8)
+                    out.append(local, length: local.count)
+                    at = r.end
+                }
+                out.append(p + at, length: raw.count - at)
+            }
+            body = out as Data
+        }
+        DebugLog.shared.log("Proxy", "PLAYLIST \(path) \(uriCount) URI(s), \(routed.count) routed, in \(ms(since: t0))ms")
+        return body
+    }
+
+    // A URI the player resolves under /<id>/ to a path mirroredRoute() maps back: not
+    // rooted ("/…"), not starting with a dot segment, no scheme (a ':' before the first
+    // '/', '?' or '#').
+    private static func isPlainRelative(_ p: UnsafePointer<UInt8>, _ count: Int) -> Bool {
+        if p[0] == 0x2F || p[0] == 0x2E { return false }
+        var i = 0
+        while i < count {
+            let c = p[i]
+            if c == 0x3A { return false }
+            if c == 0x2F || c == 0x3F || c == 0x23 { return true }
+            i += 1
+        }
+        return true
     }
 
     // MARK: - Segments / direct streams (true streaming — relayed as they arrive)
