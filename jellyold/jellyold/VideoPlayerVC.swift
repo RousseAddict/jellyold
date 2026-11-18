@@ -1,11 +1,11 @@
 import UIKit
 import AVFoundation
-#if IOS6_TARGET
 import MediaPlayer
-#else
-import AVKit
-#endif
 
+// MPMoviePlayerController on both targets. The iPad (iOS 8) ran it for months by
+// accident, through builds that mixed iOS 6 objects into the iOS 8 app, and everything
+// here was tested on it there; the AVPlayerViewController version, once really built,
+// had no Done button inside this pushed screen, so no way back out.
 class VideoPlayerVC: UIViewController {
     private let item: MediaItem
     private var bufferSpinner: UIActivityIndicatorView!
@@ -44,13 +44,7 @@ class VideoPlayerVC: UIViewController {
     // Played to the end: the teardown that follows must not save or report a position.
     private var didFinish = false
 
-#if IOS6_TARGET
     private var player: MPMoviePlayerController?
-#else
-    private var avPlayer: AVPlayer?
-    private var playerVC: AVPlayerViewController?
-    private weak var observedItem: AVPlayerItem?
-#endif
 
     private var isAudio: Bool { item.type == "Audio" }
 
@@ -108,19 +102,10 @@ class VideoPlayerVC: UIViewController {
         super.viewDidAppear(animated)
         if isAudio {
             let navBottom = navigationController?.navigationBar.frame.maxY ?? 64
-#if IOS6_TARGET
             player?.view.frame = CGRect(x: 0, y: navBottom, width: view.bounds.width,
                                         height: view.bounds.height - navBottom)
-#else
-            playerVC?.view.frame = CGRect(x: 0, y: navBottom, width: view.bounds.width,
-                                          height: view.bounds.height - navBottom)
-#endif
         }
-#if IOS6_TARGET
         player?.play()
-#else
-        avPlayer?.play()
-#endif
         if let r = reporter, !r.isStarted {
             r.begin { [weak self] in
                 guard let self = self else { return nil }
@@ -133,12 +118,8 @@ class VideoPlayerVC: UIViewController {
         super.viewDidLayoutSubviews()
         guard !isAudio else { return }
         UIApplication.shared.setStatusBarHidden(true, with: .none)
-#if IOS6_TARGET
         player?.view.frame = view.bounds
         bufferSpinner.center = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
-#else
-        playerVC?.view.frame = view.bounds
-#endif
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -157,15 +138,7 @@ class VideoPlayerVC: UIViewController {
         subtitleTimer = nil
         subtitleOverlay = nil       // a track still loading then finds nothing to start
         NotificationCenter.default.removeObserver(self)
-#if IOS6_TARGET
         player?.stop()
-#else
-        avPlayer?.pause()
-        if let observed = observedItem {
-            observed.removeObserver(self, forKeyPath: "status")
-            observedItem = nil
-        }
-#endif
         streamProxy.stop()
         // Only give the session up if AudioPlayer isn't using it — otherwise
         // backing out of a video would kill background audio.
@@ -295,9 +268,8 @@ class VideoPlayerVC: UIViewController {
         return URL(string: urlString)
     }
 
-    // MARK: - iOS 6/7 player
+    // MARK: - Player
 
-#if IOS6_TARGET
     private func setupPlayer() {
         guard let url = resolvedPlaybackURL() else { return }
         guard let player = MPMoviePlayerController(contentURL: url) else {
@@ -387,121 +359,15 @@ class VideoPlayerVC: UIViewController {
         player?.currentPlaybackTime = seconds
     }
 
-    // MARK: - iOS 8/9 player
-
-#else
-    private func setupPlayer() {
-        guard let url = resolvedPlaybackURL() else { return }
-        let playerItem = AVPlayerItem(url: url)
-        if hasResumePoint {
-            // Before the item is opened, so loading starts at the resume point rather than at
-            // the film's opening segment. Without a completion handler: one isn't allowed
-            // until the item is ready.
-            playerItem.seek(to: CMTime(seconds: startPosition, preferredTimescale: 1000))
-        }
-        let avPlayer = AVPlayer(playerItem: playerItem)
-        DebugLog.shared.log("Player", "AVPlayer created")
-        self.avPlayer = avPlayer
-        let playerVC = AVPlayerViewController()
-        playerVC.player = avPlayer
-        playerVC.showsPlaybackControls = true
-        if isAudio { playerVC.view.backgroundColor = .clear }
-        addChild(playerVC)
-        playerVC.view.frame = view.bounds
-        playerVC.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        view.addSubview(playerVC.view)
-        playerVC.didMove(toParent: self)
-        self.playerVC = playerVC
-        NotificationCenter.default.addObserver(self, selector: #selector(playbackFinished),
-            name: NSNotification.Name.AVPlayerItemDidPlayToEndTime, object: avPlayer.currentItem)
-        NotificationCenter.default.addObserver(self, selector: #selector(itemFailedToPlay(_:)),
-            name: NSNotification.Name.AVPlayerItemFailedToPlayToEndTime, object: avPlayer.currentItem)
-        NotificationCenter.default.addObserver(self, selector: #selector(itemStalled),
-            name: NSNotification.Name.AVPlayerItemPlaybackStalled, object: avPlayer.currentItem)
-        // KVO on status is the only place AVFoundation surfaces the real
-        // decode/network error behind a stream that just never starts.
-        if let currentItem = avPlayer.currentItem {
-            currentItem.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
-            observedItem = currentItem
-        }
-    }
-
-    @objc private func itemFailedToPlay(_ notification: Notification) {
-        let err = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
-        DebugLog.shared.log("Player", "AVPlayerItem FAILED to play to end: \(describe(err))")
-    }
-
-    @objc private func itemStalled() {
-        DebugLog.shared.log("Player", "AVPlayerItem playback stalled")
-    }
-
-    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
-                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
-        guard keyPath == "status", let item = object as? AVPlayerItem else {
-            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-            return
-        }
-        switch item.status {
-        case .readyToPlay:
-            DebugLog.shared.log("Player", "AVPlayerItem status=readyToPlay duration=\(String(format: "%.1f", item.duration.seconds))s")
-            DispatchQueue.main.async { self.confirmStartPosition() }
-        case .failed:
-            DebugLog.shared.log("Player", "AVPlayerItem status=FAILED \(describe(item.error as NSError?))")
-        case .unknown:
-            DebugLog.shared.log("Player", "AVPlayerItem status=unknown")
-        @unknown default:
-            DebugLog.shared.log("Player", "AVPlayerItem status=unhandled")
-        }
-    }
-
-    private func describe(_ err: NSError?) -> String {
-        guard let e = err else { return "(no error object)" }
-        var out = "domain=\(e.domain) code=\(e.code) \(e.localizedDescription)"
-        if let underlying = e.userInfo[NSUnderlyingErrorKey] as? NSError {
-            out += " underlying=[domain=\(underlying.domain) code=\(underlying.code) \(underlying.localizedDescription)]"
-        }
-        return out
-    }
-
-    private func setupBufferSpinner() {
-        // AVPlayerViewController provides its own loading indicator
-        bufferSpinner = UIActivityIndicatorView(style: .whiteLarge)
-    }
-
-    // nil until the player knows (NaN before the item is ready).
-    private func playerTime() -> Double? {
-        guard let t = avPlayer?.currentTime().seconds, t.isFinite else { return nil }
-        return t
-    }
-
-    // rate is already 1 while the item is still loading; readyToPlay is what says
-    // the stream actually opened.
-    private func playerIsPlaying() -> Bool {
-        guard let p = avPlayer, let current = p.currentItem else { return false }
-        return current.status == .readyToPlay && p.rate > 0
-    }
-
-    private func seek(to seconds: Double) {
-        avPlayer?.seek(to: CMTime(seconds: seconds, preferredTimescale: 1000))
-    }
-#endif
-
     // MARK: - Drawn subtitles
 
     private func setupSubtitles() {
         guard case .drawn(let index)? = subtitle else { return }
         let overlay = SubtitleOverlayView(frame: view.bounds)
-#if IOS6_TARGET
         // Over the player's view, its controls included: the overlay ignores touches and
         // lifts the line above the controls while they show (showCurrentCue).
         guard let playerView = player?.view else { return }
         view.insertSubview(overlay, aboveSubview: playerView)
-#else
-        // Between the picture and AVKit's controls.
-        guard let host = playerVC?.contentOverlayView else { return }
-        overlay.frame = host.bounds
-        host.addSubview(overlay)
-#endif
         subtitleOverlay = overlay
         SubtitleTrack.load(itemId: item.id, index: index) { [weak self] track in
             guard let self = self, let overlay = self.subtitleOverlay else { return }
@@ -524,11 +390,7 @@ class VideoPlayerVC: UIViewController {
         let text = playerTime().flatMap { subtitleTrack?.text(at: $0) }
         // Only while a line shows: where the controls are doesn't matter between lines.
         if text != nil {
-#if IOS6_TARGET
             if let playerView = player?.view { overlay.keepClear(of: playerView) }
-#else
-            if let playerView = playerVC?.view { overlay.keepClear(of: playerView) }
-#endif
         }
         overlay.text = text
     }
@@ -569,7 +431,6 @@ class VideoPlayerVC: UIViewController {
     }
 
     @objc private func playbackFinished(_ notification: Notification) {
-#if IOS6_TARGET
         // "playbackError" here is the single most telling line when a stream
         // plays on one device but not another — MPMoviePlayerController
         // reports a failed decode/load as a *finish*, not as an error.
@@ -586,10 +447,6 @@ class VideoPlayerVC: UIViewController {
             + (err == nil ? "" : " error=[domain=\(err!.domain) code=\(err!.code) \(err!.localizedDescription)]"))
         // Done and errors end here too; viewWillDisappear saves and reports those.
         var playedToEnd = raw == MPMovieFinishReason.playbackEnded.rawValue
-#else
-        DebugLog.shared.log("Player", "playbackFinished (played to end)")
-        var playedToEnd = true
-#endif
         // A stream that dies part-way can still end as "played to the end"; only call it
         // finished if the player got near the end (or can no longer say where it was).
         if playedToEnd, let t = playerTime(), t > 10,
