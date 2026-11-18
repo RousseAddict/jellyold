@@ -2,13 +2,18 @@ import UIKit
 
 class ServerSetupVC: UIViewController {
 
+    private var logoView: UIImageView!
     private var serverField: UITextField!
+    private var hintLabel: UILabel!
     private var usernameField: UITextField!
     private var passwordField: UITextField!
     private var connectButton: UIButton!
     private var spinner: UIActivityIndicatorView!
-    private var topOffset: CGFloat = 0
-    private var didBuildUI = false
+    // What the frames were last set from: the top of the visible area and the width.
+    private var laidOutTop: CGFloat = 0
+    private var laidOutWidth: CGFloat = 0
+    // The keyboard has slid the whole view up to keep Connect above it.
+    private var slidUp = false
 
     private let bgColor = UIColor(red: 0.10, green: 0.10, blue: 0.14, alpha: 1.0)
     private let accentColor = UIColor(red: 0.53, green: 0.26, blue: 0.73, alpha: 1.0)
@@ -18,61 +23,60 @@ class ServerSetupVC: UIViewController {
         title = "JellyOld"
         view.backgroundColor = bgColor
         registerKeyboardObservers()
-#if IOS6_TARGET
-        // iOS 6/7: nav bar is opaque, view starts below it automatically — build immediately
         buildUI()
+#if IOS6_TARGET
+        // iOS 6/7: the bar is opaque and the view starts below it, at its final size.
+        layoutUI(top: 0)
 #endif
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
 #if !IOS6_TARGET
-        // iOS 8/9: build UI once, at layout time. topLayoutGuide is the only value
-        // that's correct here — navigationBar.frame.maxY is still 44 (status bar inset
-        // not yet applied) during the first viewWillAppear, which slid the logo under
-        // the bar. topLayoutGuide is also 0 for an opaque bar, where the view is
-        // already inset by UIKit.
-        guard !didBuildUI else { return }
-        didBuildUI = true
-        topOffset = topLayoutGuide.length
-        buildUI()
+        // iOS 8: the view runs under the translucent bar, and the content starts at
+        // topLayoutGuide (0 under an opaque bar, which UIKit already insets the view for;
+        // navigationBar.frame is still 44 high on the first appearance). Laying out once,
+        // on the first pass, left the logo partly under the bar, and the iPad rotates: so
+        // the frames follow the guide and the width whenever either changes. Not while
+        // the keyboard has slid the view up; hiding it lays out again.
+        let top = topLayoutGuide.length
+        let width = view.bounds.width
+        guard top != laidOutTop || width != laidOutWidth else { return }
+        guard !slidUp || laidOutWidth == 0 else { return }
+        DebugLog.shared.log("UI", "login screen laid out below y \(Int(top)), \(Int(width)) wide")
+        layoutUI(top: top)
 #endif
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    // The views, without frames: layoutUI sets those.
     private func buildUI() {
-        let w = view.bounds.width
-        let top = topOffset   // 0 on iOS 6 (opaque bar), nav bar bottom on iOS 8
-
-        let logoSize: CGFloat = 110
-        let logoView = UIImageView(frame: CGRect(x: (w - logoSize) / 2, y: top + 20,
-                                                  width: logoSize, height: logoSize))
+        logoView = UIImageView(frame: .zero)
         logoView.image = UIImage(named: "Logo@2x")
         logoView.contentMode = .scaleAspectFit
         logoView.backgroundColor = .clear
         view.addSubview(logoView)
 
-        serverField = makeField("Server (e.g. 192.168.1.10)", y: top + 150, secure: false, returnKey: .next)
+        serverField = makeField("Server (e.g. 192.168.1.10)", secure: false, returnKey: .next)
         serverField.keyboardType = .URL
         view.addSubview(serverField)
 
-        let hint = UILabel(frame: CGRect(x: 24, y: top + 199, width: w - 48, height: 16))
-        hint.text = "The port and http or https are found for you."
-        hint.font = UIFont.systemFont(ofSize: 12)
-        hint.textColor = UIColor(white: 0.55, alpha: 1.0)
-        hint.backgroundColor = .clear
-        hint.adjustsFontSizeToFitWidth = true
-        view.addSubview(hint)
+        hintLabel = UILabel(frame: .zero)
+        hintLabel.text = "The port and http or https are found for you."
+        hintLabel.font = UIFont.systemFont(ofSize: 12)
+        hintLabel.textColor = UIColor(white: 0.55, alpha: 1.0)
+        hintLabel.backgroundColor = .clear
+        hintLabel.adjustsFontSizeToFitWidth = true
+        view.addSubview(hintLabel)
 
-        usernameField = makeField("Username", y: top + 224, secure: false, returnKey: .next)
+        usernameField = makeField("Username", secure: false, returnKey: .next)
         view.addSubview(usernameField)
 
-        passwordField = makeField("Password", y: top + 282, secure: true, returnKey: .go)
+        passwordField = makeField("Password", secure: true, returnKey: .go)
         view.addSubview(passwordField)
 
         connectButton = UIButton(type: .custom)
-        connectButton.frame = CGRect(x: 20, y: top + 346, width: w - 40, height: 46)
         connectButton.setTitle("Connect", for: .normal)
         connectButton.setTitleColor(.white, for: .normal)
         connectButton.setTitleColor(UIColor(white: 1.0, alpha: 0.5), for: .disabled)
@@ -82,16 +86,29 @@ class ServerSetupVC: UIViewController {
         connectButton.addTarget(self, action: #selector(connectTapped), for: .touchUpInside)
         view.addSubview(connectButton)
 
-        let visibleMidY = top + (view.bounds.height - top) / 2
         spinner = UIActivityIndicatorView(style: .whiteLarge)
-        spinner.center = CGPoint(x: w / 2, y: visibleMidY)
         spinner.hidesWhenStopped = true
         view.addSubview(spinner)
     }
 
-    private func makeField(_ placeholder: String, y: CGFloat, secure: Bool,
-                           returnKey: UIReturnKeyType) -> UITextField {
-        let f = UITextField(frame: CGRect(x: 20, y: y, width: view.bounds.width - 40, height: 46))
+    // Everything from `top`, the top of the visible area: 0 on iOS 6 (opaque bar), the
+    // bar's bottom on iOS 8.
+    private func layoutUI(top: CGFloat) {
+        let w = view.bounds.width
+        laidOutTop = top
+        laidOutWidth = w
+        let logoSize: CGFloat = 110
+        logoView.frame = CGRect(x: (w - logoSize) / 2, y: top + 20, width: logoSize, height: logoSize)
+        serverField.frame = CGRect(x: 20, y: top + 150, width: w - 40, height: 46)
+        hintLabel.frame = CGRect(x: 24, y: top + 199, width: w - 48, height: 16)
+        usernameField.frame = CGRect(x: 20, y: top + 224, width: w - 40, height: 46)
+        passwordField.frame = CGRect(x: 20, y: top + 282, width: w - 40, height: 46)
+        connectButton.frame = CGRect(x: 20, y: top + 346, width: w - 40, height: 46)
+        spinner.center = CGPoint(x: w / 2, y: top + (view.bounds.height - top) / 2)
+    }
+
+    private func makeField(_ placeholder: String, secure: Bool, returnKey: UIReturnKeyType) -> UITextField {
+        let f = UITextField(frame: .zero)
         f.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
         f.textColor = .white
         f.contentVerticalAlignment = .center
@@ -123,7 +140,6 @@ class ServerSetupVC: UIViewController {
     }
 
     @objc private func keyboardWillShow(_ notification: Notification) {
-        guard connectButton != nil else { return }
         guard let keyboardFrame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
         let screenHeight = UIScreen.main.bounds.height
@@ -132,12 +148,24 @@ class ServerSetupVC: UIViewController {
         let needed = contentBottom - visibleBottom
         guard needed > 0 else { return }
         guard view.frame.origin.y == 0 else { return }
-        UIView.animate(withDuration: duration) { self.view.frame.origin.y = -needed }
+        slidUp = true
+        // The form slides up over the logo, which fades rather than going under the bar
+        // (an iPad in landscape, a 3.5-inch iPhone).
+        let logoCovered = logoView.frame.minY - needed < laidOutTop
+        UIView.animate(withDuration: duration) {
+            self.view.frame.origin.y = -needed
+            if logoCovered { self.logoView.alpha = 0 }
+        }
     }
 
     @objc private func keyboardWillHide(_ notification: Notification) {
         let duration = notification.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
-        UIView.animate(withDuration: duration) { self.view.frame.origin.y = 0 }
+        slidUp = false
+        UIView.animate(withDuration: duration) {
+            self.view.frame.origin.y = 0
+            self.logoView.alpha = 1
+        }
+        view.setNeedsLayout()
     }
 
     // MARK: - Actions
