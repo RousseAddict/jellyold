@@ -80,7 +80,7 @@ class ItemDetailVC: UIViewController {
 
     private var mediaStreams: [MediaStream] = []
     private var selectedAudioIndex: Int?
-    private var defaultAudioIndex: Int?     // the server-reported default, for the "Original" check
+    private var defaultAudioIndex: Int?     // the file's default track, set once with the first track list
     private var selectedSubtitleIndex: Int?
     private var fileInfo: MediaFileInfo?
     // The server's answer to a watched toggle made here, until the next full fetch.
@@ -115,11 +115,10 @@ class ItemDetailVC: UIViewController {
         return nil
     }
 
-    // Jellyfin only applies an audio track or paints a subtitle in a full transcode (a remux
-    // keeps the file's default tracks), so choosing one is what turns it on.
+    // Painting a subtitle in takes a full conversion. An audio track doesn't: Jellyfin
+    // applies AudioStreamIndex whether it copies the video or converts it.
     private var forceTranscode: Bool {
         return burnedInSubtitleIndex != nil
-            || (selectedAudioIndex != nil && selectedAudioIndex != defaultAudioIndex)
     }
 
     private var downloadBtn: UIButton?
@@ -531,7 +530,7 @@ class ItemDetailVC: UIViewController {
             y += 40 + 8
         }
         if forceTranscode {
-            y += addLabel("The server converts the video to apply these tracks, so it may take a moment longer to start.",
+            y += addLabel("The server converts the video to paint this subtitle in, so it may take a moment longer to start.",
                           font: UIFont.systemFont(ofSize: 12), color: UIColor(white: 0.5, alpha: 1),
                           x: x, y: y, width: w) + 8
         }
@@ -1180,13 +1179,12 @@ class ItemDetailVC: UIViewController {
         updateDownloadButton()
     }
 
-    // "Original" is a remux: it can't switch to a non-default audio track or paint a
-    // subtitle in. A text subtitle never needs painting — a download keeps it as a file
-    // beside the video, and a Chromecast draws it from WebVTT — so only an image one rules
-    // Original out. Shared by the download and cast sheets.
+    // "Original" is a remux: it takes any audio track but can't paint a subtitle in. A text
+    // subtitle never needs painting — a download keeps it as a file beside the video, and a
+    // Chromecast draws it from WebVTT — so only an image one rules Original out. Shared by
+    // the download and cast sheets.
     private var availableQualities: [VideoQuality] {
         let originalOK = burnedInSubtitleIndex == nil
-            && (selectedAudioIndex == nil || selectedAudioIndex == defaultAudioIndex)
         var list: [VideoQuality] = originalOK ? [.original] : []
         list.append(contentsOf: [.q720, .q480, .q360])
         return list
@@ -1248,13 +1246,15 @@ class ItemDetailVC: UIViewController {
             if let w = quality.maxWidth { params.append("MaxWidth=\(w)") }
             if let vb = quality.videoBitrate { params.append("VideoBitRate=\(vb)") }
             if let ab = quality.audioBitrate { params.append("AudioBitRate=\(ab)") }
-            if let audioIdx = audioIndex {
-                params.append("AudioStreamIndex=\(audioIdx)")
-            }
             if let subIdx = subtitleIndex {
                 params.append("SubtitleStreamIndex=\(subIdx)")
                 params.append("SubtitleMethod=Encode")
             }
+        }
+        // Named for Original too: a remux applies it, and without it Jellyfin takes the
+        // file's first audio track rather than its default.
+        if let audioIdx = audioIndex {
+            params.append("AudioStreamIndex=\(audioIdx)")
         }
         if startTime > 0 { params.append("StartTimeTicks=\(Int64(startTime * 10_000_000))") }
         return URL(string: "\(serverURL)/Videos/\(itemId)/stream.mp4?\(params.joined(separator: "&"))")

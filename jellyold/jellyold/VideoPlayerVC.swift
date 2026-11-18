@@ -13,7 +13,7 @@ class VideoPlayerVC: UIViewController {
 
     private var selectedAudioIndex: Int?        // Jellyfin stream index — AudioStreamIndex URL param
     private let subtitle: SubtitleChoice?       // drawn here, or SubtitleStreamIndex URL param
-    private var forceTranscode: Bool            // forces Jellyfin to transcode and honour stream index params
+    private var forceTranscode: Bool            // a subtitle the server paints into the picture
 
     // A drawn subtitle: the track once loaded, the view showing it, and the timer keeping
     // it in step with the player.
@@ -80,12 +80,11 @@ class VideoPlayerVC: UIViewController {
         setupBufferSpinner()
         setupSubtitles()
         if !isAudio {
-            // An audio choice only reaches the server in the forced-transcode URL; a
-            // subtitle shows either way.
+            // The tracks in use, as the stream URL names them.
             reporter = PlaybackReporter(
                 item: item, playSessionId: playSessionId,
                 playMethod: DownloadManager.isDownloaded(item.id) ? "DirectPlay" : "Transcode",
-                audioIndex: forceTranscode ? selectedAudioIndex : nil,
+                audioIndex: selectedAudioIndex,
                 subtitleIndex: subtitle?.index)
         }
     }
@@ -252,12 +251,15 @@ class VideoPlayerVC: UIViewController {
                 params.append("AudioBitRate=\(audioBitrate)")
                 params.append("MaxAudioChannels=2")
             }
+            // Always named, the default track too: with none, Jellyfin plays the file's
+            // first audio track, not its default (South Park S25: English first, French
+            // the default). It applies the track whether it copies or converts the video.
+            if let audioIdx = selectedAudioIndex {
+                params.append("AudioStreamIndex=\(audioIdx)")
+            }
             if forceTranscode {
                 params.append("EnableDirectStream=false")
                 params.append("EnableDirectPlay=false")
-                if let audioIdx = selectedAudioIndex {
-                    params.append("AudioStreamIndex=\(audioIdx)")
-                }
                 if case .burnedIn(let subIdx)? = subtitle {
                     params.append("SubtitleStreamIndex=\(subIdx)")
                     params.append("SubtitleMethod=Encode")
