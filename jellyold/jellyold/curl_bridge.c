@@ -75,6 +75,10 @@ void curl_bridge_set_timeout(CurlHandle h, long secs) {
     curl_easy_setopt(h, CURLOPT_TIMEOUT, secs);
 }
 
+void curl_bridge_set_connect_timeout(CurlHandle h, long secs) {
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, secs);
+}
+
 void curl_bridge_set_write_fn(CurlHandle h, CurlBridgeWriteFn fn, void *userdata) {
     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, fn);
     curl_easy_setopt(h, CURLOPT_WRITEDATA, userdata);
@@ -205,6 +209,12 @@ long curl_bridge_response_code(CurlHandle h) {
     long code = 0;
     curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &code);
     return code;
+}
+
+const char *curl_bridge_effective_url(CurlHandle h) {
+    char *url = NULL;
+    curl_easy_getinfo(h, CURLINFO_EFFECTIVE_URL, &url);
+    return url;
 }
 
 const char *curl_bridge_strerror(int code) {

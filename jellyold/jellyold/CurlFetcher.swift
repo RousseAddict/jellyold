@@ -36,6 +36,17 @@ private class CurlDownloadBox {
     var progressHandler: ((Float) -> Void)?
 }
 
+// A request's outcome for callers that tell failures apart (signing in): the body
+// whatever the status, the HTTP status (0 when no reply arrived), curl's code and
+// message when none did, and the URL it ended at after any redirect.
+struct CurlReply {
+    let body: Data
+    let status: Int
+    let curlCode: Int32
+    let curlMessage: String
+    let finalURL: String
+}
+
 // MARK: - CurlFetcher
 //
 // libcurl + embedded OpenSSL transport. Bypasses iOS 6 Secure Transport, which
@@ -231,15 +242,77 @@ class CurlFetcher {
         if headerList != nil { curl_bridge_set_headers(h, headerList) }
         defer { if headerList != nil { curl_bridge_headers_free(headerList) } }
 
-        body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-            curl_bridge_set_post_body(h, raw.baseAddress, CLong(body.count))
-        }
+        CurlFetcher.setPostBody(h, body)
 
         let rc = curl_bridge_perform(h)
         guard rc == 0 else { return nil }
         let code = curl_bridge_response_code(h)
         guard code >= 200, code < 300 else { return nil }
         return buf as Data
+    }
+
+    // An empty body goes through curl's bodyless POST: an empty Data has no base
+    // address, and a NULL body would make curl read one from stdin.
+    private static func setPostBody(_ h: CurlHandle?, _ body: Data) {
+        if body.isEmpty {
+            "POST".withCString { curl_bridge_set_bodyless_method(h, $0) }
+            return
+        }
+        body.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            curl_bridge_set_post_body(h, raw.baseAddress, CLong(body.count))
+        }
+    }
+
+    // MARK: - Requests that report how they failed
+
+    // Synchronous, off the main thread: a GET, or a POST when there is a body.
+    static func syncReply(url: String,
+                          headers: [String: String] = [:],
+                          body: Data? = nil,
+                          connectTimeout: Int = 15,
+                          timeout: Int = 30) -> CurlReply {
+        _ = curlGlobalInit
+        let h = curl_bridge_init()
+        defer { curl_bridge_cleanup(h) }
+
+        let buf = NSMutableData()
+        let ptr = Unmanaged.passUnretained(buf).toOpaque()
+
+        url.withCString { curl_bridge_set_url(h, $0) }
+        curl_bridge_set_ssl_noverify(h)
+        curl_bridge_set_follow_redirects(h)
+        curl_bridge_set_connect_timeout(h, CLong(connectTimeout))
+        curl_bridge_set_timeout(h, CLong(timeout))
+        curl_bridge_set_write_fn(h, curlDataWriteCallback, ptr)
+
+        var headerList: UnsafeMutableRawPointer?
+        for (k, v) in headers {
+            "\(k): \(v)".withCString { headerList = curl_bridge_headers_append(headerList, $0) }
+        }
+        if headerList != nil { curl_bridge_set_headers(h, headerList) }
+        defer { if headerList != nil { curl_bridge_headers_free(headerList) } }
+
+        if let body = body { setPostBody(h, body) }
+
+        let rc = curl_bridge_perform(h)
+        let finalURL = curl_bridge_effective_url(h).map { String(cString: $0) } ?? url
+        return CurlReply(body: buf as Data,
+                         status: rc == 0 ? curl_bridge_response_code(h) : 0,
+                         curlCode: rc,
+                         curlMessage: rc == 0 ? "" : String(cString: curl_bridge_strerror(rc)),
+                         finalURL: finalURL)
+    }
+
+    // syncReply on curlQueue; completion on the main thread.
+    static func reply(url: String,
+                      headers: [String: String] = [:],
+                      body: Data? = nil,
+                      timeout: Int = 30,
+                      completion: @escaping (CurlReply) -> Void) {
+        CurlFetcher.curlQueue.async {
+            let reply = syncReply(url: url, headers: headers, body: body, timeout: timeout)
+            DispatchQueue.main.async { completion(reply) }
+        }
     }
 
     // No CURLOPT_TIMEOUT (secs: 0 = unbounded) — movie downloads can run far longer

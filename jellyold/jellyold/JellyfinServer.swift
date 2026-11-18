@@ -1,4 +1,4 @@
-import Foundation
+import UIKit
 
 struct JellyfinServer {
     private static let defaults = UserDefaults.standard
@@ -51,8 +51,42 @@ struct JellyfinServer {
         defaults.removeObject(forKey: "userId")
     }
 
+    // MARK: - This install, as Jellyfin sees it
+    //
+    // Jellyfin keeps one session per user and device ID: signing in revokes the token
+    // of any earlier sign-in with the same ID. Every build before this one sent the same
+    // ID, so signing in on the iPad signed the iPhone out. Each install now takes its own
+    // at its first sign-in and keeps it across logouts, with its model ("iPad") as the
+    // device name. An install still signed in from before keeps the old ID and name,
+    // which its token belongs to, until it signs in again.
+
+    private static let sharedDeviceId = "jellyold-device-01"
+
+    static var deviceId: String {
+        return defaults.string(forKey: "deviceId") ?? sharedDeviceId
+    }
+
+    private static var deviceName: String {
+        return defaults.string(forKey: "deviceName") ?? "iPhone"
+    }
+
+    // The header for a sign-in, which is when this install takes its own ID and name.
+    // Main thread (UIDevice).
+    static func signInHeader() -> String {
+        if defaults.string(forKey: "deviceId") == nil {
+            defaults.set("jellyold-" + NSUUID().uuidString.lowercased(), forKey: "deviceId")
+        }
+        defaults.set(UIDevice.current.model, forKey: "deviceName")
+        return clientHeader(token: nil)
+    }
+
     static func authHeader() -> String {
-        let token = accessToken ?? ""
-        return "MediaBrowser Token=\"\(token)\", Client=\"JellyOld\", Device=\"iPhone\", DeviceId=\"jellyold-device-01\", Version=\"1.0\""
+        return clientHeader(token: accessToken ?? "")
+    }
+
+    private static func clientHeader(token: String?) -> String {
+        let tokenField = token.map { "Token=\"\($0)\", " } ?? ""
+        return "MediaBrowser \(tokenField)Client=\"JellyOld\", Device=\"\(deviceName)\", "
+            + "DeviceId=\"\(deviceId)\", Version=\"1.0\""
     }
 }

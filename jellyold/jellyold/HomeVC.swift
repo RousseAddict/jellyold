@@ -395,6 +395,7 @@ final class HomeVC: UITableViewController {
     }
 
     private func logout() {
+        JellyfinAPI.logout()
         JellyfinServer.clear()
         navigationController?.setViewControllers([ServerSetupVC()], animated: true)
     }

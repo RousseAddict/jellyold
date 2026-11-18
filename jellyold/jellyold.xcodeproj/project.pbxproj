@@ -84,6 +84,7 @@
 		BB260006 /* ShelfCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB260005 /* ShelfCell.swift */; };
 		BB280002 /* SubtitleOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB280001 /* SubtitleOverlay.swift */; };
 		BB290002 /* ActionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB290001 /* ActionSheet.swift */; };
+		BB300002 /* ServerAddress.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB300001 /* ServerAddress.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -184,6 +185,7 @@
 		BB260005 /* ShelfCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShelfCell.swift; sourceTree = "<group>"; };
 		BB280001 /* SubtitleOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleOverlay.swift; sourceTree = "<group>"; };
 		BB290001 /* ActionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionSheet.swift; sourceTree = "<group>"; };
+		BB300001 /* ServerAddress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddress.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -261,6 +263,7 @@
 				BB250001 /* PlaybackReporter.swift */,
 				BB280001 /* SubtitleOverlay.swift */,
 				BB290001 /* ActionSheet.swift */,
+				BB300001 /* ServerAddress.swift */,
 				BB230009 /* CastVC.swift */,
 				BB230007 /* CastController.swift */,
 				BB230005 /* CastSession.swift */,
@@ -513,6 +516,7 @@
 				BB250002 /* PlaybackReporter.swift in Sources */,
 				BB280002 /* SubtitleOverlay.swift in Sources */,
 				BB290002 /* ActionSheet.swift in Sources */,
+				BB300002 /* ServerAddress.swift in Sources */,
 				BB230010 /* CastVC.swift in Sources */,
 				BB230008 /* CastController.swift in Sources */,
 				BB230006 /* CastSession.swift in Sources */,

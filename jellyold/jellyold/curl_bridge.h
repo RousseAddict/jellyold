@@ -21,6 +21,8 @@ void        curl_bridge_set_url(CurlHandle h, const char *url);
 void        curl_bridge_set_ssl_noverify(CurlHandle h);
 void        curl_bridge_set_follow_redirects(CurlHandle h);
 void        curl_bridge_set_timeout(CurlHandle h, long secs);
+/* Time allowed to reach the server (DNS + TCP + TLS); 15 s unless set. */
+void        curl_bridge_set_connect_timeout(CurlHandle h, long secs);
 void        curl_bridge_set_write_fn(CurlHandle h, CurlBridgeWriteFn fn, void *userdata);
 /* Raw response header lines (status line + each header), one call per line —
    used by the streaming proxy to pass upstream's real status/headers through
@@ -49,6 +51,9 @@ long        curl_bridge_recv(CurlHandle h, void *buf, long len, long timeout_ms)
 
 int         curl_bridge_perform(CurlHandle h);
 long        curl_bridge_response_code(CurlHandle h);
+/* The URL the transfer ended at, after any redirect. Owned by the handle: copy it
+   before curl_bridge_cleanup. NULL if there is none. */
+const char *curl_bridge_effective_url(CurlHandle h);
 const char *curl_bridge_strerror(int code);
 
 #endif /* curl_bridge_h */

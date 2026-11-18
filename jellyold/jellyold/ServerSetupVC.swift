@@ -53,19 +53,26 @@ class ServerSetupVC: UIViewController {
         logoView.backgroundColor = .clear
         view.addSubview(logoView)
 
-        serverField = makeField("Server URL  (e.g. http://192.168.1.10:8096)",
-                                y: top + 150, secure: false)
+        serverField = makeField("Server (e.g. 192.168.1.10)", y: top + 150, secure: false, returnKey: .next)
         serverField.keyboardType = .URL
         view.addSubview(serverField)
 
-        usernameField = makeField("Username", y: top + 208, secure: false)
+        let hint = UILabel(frame: CGRect(x: 24, y: top + 199, width: w - 48, height: 16))
+        hint.text = "The port and http or https are found for you."
+        hint.font = UIFont.systemFont(ofSize: 12)
+        hint.textColor = UIColor(white: 0.55, alpha: 1.0)
+        hint.backgroundColor = .clear
+        hint.adjustsFontSizeToFitWidth = true
+        view.addSubview(hint)
+
+        usernameField = makeField("Username", y: top + 224, secure: false, returnKey: .next)
         view.addSubview(usernameField)
 
-        passwordField = makeField("Password", y: top + 266, secure: true)
+        passwordField = makeField("Password", y: top + 282, secure: true, returnKey: .go)
         view.addSubview(passwordField)
 
         connectButton = UIButton(type: .custom)
-        connectButton.frame = CGRect(x: 20, y: top + 330, width: w - 40, height: 46)
+        connectButton.frame = CGRect(x: 20, y: top + 346, width: w - 40, height: 46)
         connectButton.setTitle("Connect", for: .normal)
         connectButton.setTitleColor(.white, for: .normal)
         connectButton.setTitleColor(UIColor(white: 1.0, alpha: 0.5), for: .disabled)
@@ -82,7 +89,8 @@ class ServerSetupVC: UIViewController {
         view.addSubview(spinner)
     }
 
-    private func makeField(_ placeholder: String, y: CGFloat, secure: Bool) -> UITextField {
+    private func makeField(_ placeholder: String, y: CGFloat, secure: Bool,
+                           returnKey: UIReturnKeyType) -> UITextField {
         let f = UITextField(frame: CGRect(x: 20, y: y, width: view.bounds.width - 40, height: 46))
         f.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
         f.textColor = .white
@@ -96,7 +104,7 @@ class ServerSetupVC: UIViewController {
         f.autocapitalizationType = .none
         f.autocorrectionType = .no
         f.keyboardAppearance = .dark
-        f.returnKeyType = .done
+        f.returnKeyType = returnKey
         f.delegate = self
         f.attributedPlaceholder = NSAttributedString(
             string: placeholder,
@@ -135,6 +143,7 @@ class ServerSetupVC: UIViewController {
     // MARK: - Actions
 
     @objc private func connectTapped() {
+        guard connectButton.isEnabled else { return }   // Go pressed while signing in
         view.endEditing(true)
         guard let raw = serverField.text, !raw.trimmingCharacters(in: .whitespaces).isEmpty else {
             showAlert("Please enter the server URL."); return
@@ -143,15 +152,24 @@ class ServerSetupVC: UIViewController {
             showAlert("Please enter your username."); return
         }
         let pass = passwordField.text ?? ""
-        let serverURL = raw.hasSuffix("/") ? String(raw.dropLast()) : raw
 
         setLoading(true)
-        JellyfinAPI.login(serverURL: serverURL, username: user, password: pass) { success, errorMsg in
-            self.setLoading(false)
-            if success {
-                self.navigationController?.setViewControllers([HomeVC()], animated: true)
-            } else {
-                self.showAlert(errorMsg ?? "Connection failed.")
+        ServerAddress.find(raw) { server, problem in
+            guard let server = server else {
+                self.setLoading(false)
+                self.showAlert(problem ?? "No Jellyfin server answered.")
+                return
+            }
+            // The field shows the full address found, which a retry (after a wrong
+            // password, say) then reaches directly.
+            self.serverField.text = server.baseURL
+            JellyfinAPI.login(serverURL: server.baseURL, username: user, password: pass) { success, errorMsg in
+                self.setLoading(false)
+                if success {
+                    self.navigationController?.setViewControllers([HomeVC()], animated: true)
+                } else {
+                    self.showAlert(errorMsg ?? "The sign-in failed.")
+                }
             }
         }
     }
@@ -178,8 +196,16 @@ class ServerSetupVC: UIViewController {
 }
 
 extension ServerSetupVC: UITextFieldDelegate {
+    // Next, Next, Go: the server and username lead to the following field, the
+    // password signs in.
     func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        textField.resignFirstResponder()
+        if textField === serverField {
+            usernameField.becomeFirstResponder()
+        } else if textField === usernameField {
+            passwordField.becomeFirstResponder()
+        } else {
+            connectTapped()
+        }
         return true
     }
 }

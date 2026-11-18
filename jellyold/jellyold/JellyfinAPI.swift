@@ -4,29 +4,55 @@ class JellyfinAPI {
 
     // MARK: - Auth
 
+    // `serverURL` is the address ServerAddress found. Completion on the main thread, with
+    // a message fit for the user when it fails.
     static func login(serverURL: String, username: String, password: String, completion: @escaping (Bool, String?) -> Void) {
         let url = "\(serverURL)/Users/AuthenticateByName"
-        let body: [String: Any] = ["Username": username, "Pw": password]
-        let headers = [
-            "Authorization": "MediaBrowser Client=\"JellyOld\", Device=\"iPhone\", DeviceId=\"jellyold-device-01\", Version=\"1.0\""
-        ]
-        HTTPClient.post(url: url, headers: headers, body: body) { data, error in
-            if let error = error {
-                completion(false, error.localizedDescription)
+        let body = (try? JSONSerialization.data(withJSONObject: ["Username": username, "Pw": password],
+                                                options: [])) ?? Data()
+        let headers = ["Authorization": JellyfinServer.signInHeader(),
+                       "Content-Type": "application/json"]
+        CurlFetcher.reply(url: url, headers: headers, body: body) { reply in
+            if reply.curlCode != 0 {
+                DebugLog.shared.log("LOGIN", "sign-in failed: \(reply.curlMessage)")
+                completion(false, "The server stopped answering during the sign-in (\(reply.curlMessage)). Try again.")
                 return
             }
-            guard let data = data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            if reply.status == 401 {
+                DebugLog.shared.log("LOGIN", "sign-in refused: wrong username or password (HTTP 401)")
+                completion(false, "Wrong username or password.")
+                return
+            }
+            guard reply.status >= 200, reply.status < 300 else {
+                DebugLog.shared.log("LOGIN", "sign-in refused: HTTP \(reply.status)")
+                completion(false, "The server refused the sign-in (HTTP \(reply.status)).")
+                return
+            }
+            guard let json = (try? JSONSerialization.jsonObject(with: reply.body, options: [])) as? [String: Any],
                   let token = json["AccessToken"] as? String,
                   let userInfo = json["User"] as? [String: Any],
                   let userId = userInfo["Id"] as? String else {
-                completion(false, "Invalid response from server. Check the URL and credentials.")
+                DebugLog.shared.log("LOGIN", "sign-in reply unreadable (\(reply.body.count) bytes)")
+                completion(false, "The server's reply to the sign-in couldn't be read.")
                 return
             }
             JellyfinServer.serverURL = serverURL
             JellyfinServer.accessToken = token
             JellyfinServer.userId = userId
+            DebugLog.shared.log("LOGIN", "signed in to \(serverURL) as device \(JellyfinServer.deviceId)")
             completion(true, nil)
+        }
+    }
+
+    // Ends this install's session on the server, so its token stops working and the
+    // device leaves the server's list. Sent in the background: the app signs out
+    // locally whatever the answer. Call before JellyfinServer.clear().
+    static func logout() {
+        guard let serverURL = JellyfinServer.serverURL, JellyfinServer.accessToken != nil else { return }
+        CurlFetcher.postReport(url: "\(serverURL)/Sessions/Logout",
+                               headers: ["Authorization": JellyfinServer.authHeader()],
+                               body: Data()) { ok in
+            DebugLog.shared.log("LOGIN", ok ? "server session ended" : "server session not ended (no answer)")
         }
     }
 

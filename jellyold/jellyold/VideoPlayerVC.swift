@@ -244,7 +244,7 @@ class VideoPlayerVC: UIViewController {
             let params = [
                 "api_key=\(token)",
                 "UserId=\(userId)",
-                "DeviceId=jellyold-device-01",
+                "DeviceId=\(JellyfinServer.deviceId)",
                 "MaxStreamingBitrate=320000",
                 "Container=mp3,aac,m4a%7Caac,m4b%7Caac",
                 "TranscodingContainer=mp3",
@@ -256,7 +256,7 @@ class VideoPlayerVC: UIViewController {
             var params = [
                 "api_key=\(token)",
                 "MediaSourceId=\(item.id)",
-                "DeviceId=jellyold-device-01",
+                "DeviceId=\(JellyfinServer.deviceId)",
                 // master.m3u8 reads only these two (not MaxStreamingBitrate): without them
                 // Jellyfin converts at its smallest size, 416 px / 256 kbps. A file within
                 // both is still streamed untouched; one above either is converted.
