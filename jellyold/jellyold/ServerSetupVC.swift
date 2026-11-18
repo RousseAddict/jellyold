@@ -108,14 +108,18 @@ class ServerSetupVC: UIViewController {
     }
 
     private func makeField(_ placeholder: String, secure: Bool, returnKey: UIReturnKeyType) -> UITextField {
-        let f = UITextField(frame: .zero)
+        let f = RoomyTextField(frame: .zero)
         f.backgroundColor = UIColor(white: 1.0, alpha: 0.08)
         f.textColor = .white
         f.contentVerticalAlignment = .center
         f.layer.cornerRadius = 10
         f.layer.borderColor = UIColor(white: 1.0, alpha: 0.15).cgColor
         f.layer.borderWidth = 1
-        f.leftView = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 46))
+        // The left padding lets taps through: as a touchable view it caught the ones
+        // landing there, and the field didn't start editing.
+        let padding = UIView(frame: CGRect(x: 0, y: 0, width: 14, height: 46))
+        padding.isUserInteractionEnabled = false
+        f.leftView = padding
         f.leftViewMode = .always
         f.isSecureTextEntry = secure
         f.autocapitalizationType = .none
@@ -220,6 +224,17 @@ class ServerSetupVC: UIViewController {
         alert.addAction(UIAlertAction(title: "OK", style: .default))
         present(alert, animated: true)
 #endif
+    }
+}
+
+// A login field that takes taps a little outside its box: 6 pt above and below (half
+// the narrowest gap between two fields, so neighbours never overlap) and 16 pt to the
+// sides, short of the screen edge.
+private final class RoomyTextField: UITextField {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        let area = CGRect(x: bounds.minX - 16, y: bounds.minY - 6,
+                          width: bounds.width + 32, height: bounds.height + 12)
+        return area.contains(point)
     }
 }
 
