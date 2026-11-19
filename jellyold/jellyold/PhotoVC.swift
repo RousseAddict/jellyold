@@ -214,7 +214,7 @@ final class PhotoVC: UIViewController, UIScrollViewDelegate {
               let token = JellyfinServer.accessToken else { return }
         let item = items[index]
         // Sized for a 1080p TV, unlike the 640px cap used for the phone screen.
-        let url = "\(serverURL)/Items/\(item.id)/Images/Primary?maxWidth=1920&quality=90&api_key=\(token)"
+        let url = "\(serverURL)/Items/\(item.id)/Images/Primary?maxWidth=1920&quality=90&ApiKey=\(token)"
         CastController.shared.start(item: item, kind: .photo, device: device,
                                     url: url, contentType: "image/jpeg", startTime: 0)
         navigationController?.pushViewController(CastVC(), animated: true)

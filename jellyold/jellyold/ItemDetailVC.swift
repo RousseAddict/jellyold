@@ -1063,7 +1063,7 @@ class ItemDetailVC: UIViewController {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
         var params = [
-            "api_key=\(token)",
+            "ApiKey=\(token)",
             "MediaSourceId=\(itemId)",
             "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())",
@@ -1101,7 +1101,7 @@ class ItemDetailVC: UIViewController {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
         var params = [
-            "api_key=\(token)",
+            "ApiKey=\(token)",
             "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())"
         ]
@@ -1228,7 +1228,7 @@ class ItemDetailVC: UIViewController {
         guard let serverURL = JellyfinServer.serverURL,
               let token = JellyfinServer.accessToken else { return nil }
         var params = [
-            "api_key=\(token)",
+            "ApiKey=\(token)",
             "MediaSourceId=\(itemId)",
             "DeviceId=\(JellyfinServer.deviceId)",
             "PlaySessionId=\(newPlaySessionId())",

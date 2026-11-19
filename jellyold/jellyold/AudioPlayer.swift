@@ -267,7 +267,7 @@ final class AudioPlayer: NSObject {
               let token = JellyfinServer.accessToken,
               let userId = JellyfinServer.userId else { return nil }
         let params = [
-            "api_key=\(token)",
+            "ApiKey=\(token)",
             "UserId=\(userId)",
             "DeviceId=\(JellyfinServer.deviceId)",
             "MaxStreamingBitrate=320000",

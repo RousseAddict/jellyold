@@ -214,7 +214,7 @@ class VideoPlayerVC: UIViewController {
         let urlString: String
         if isAudio {
             let params = [
-                "api_key=\(token)",
+                "ApiKey=\(token)",
                 "UserId=\(userId)",
                 "DeviceId=\(JellyfinServer.deviceId)",
                 "MaxStreamingBitrate=320000",
@@ -226,7 +226,7 @@ class VideoPlayerVC: UIViewController {
             urlString = "\(serverURL)/Audio/\(item.id)/universal?\(params)"
         } else {
             var params = [
-                "api_key=\(token)",
+                "ApiKey=\(token)",
                 "MediaSourceId=\(item.id)",
                 "DeviceId=\(JellyfinServer.deviceId)",
                 // master.m3u8 reads only these two (not MaxStreamingBitrate): without them

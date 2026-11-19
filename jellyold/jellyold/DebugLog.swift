@@ -29,19 +29,33 @@ final class DebugLog {
 
     private init() {}
 
-    // Masks the Jellyfin api_key in a URL before it reaches the log, so the
-    // file can be handed around without leaking an access token.
+    // Masks Jellyfin access tokens in URLs before they reach the log, so the
+    // file can be handed around without leaking one. We send `ApiKey=`, and
+    // Jellyfin copies it into the child playlist URLs it generates; `api_key=`
+    // is the legacy spelling that older logs and servers still carry. Only the
+    // value is replaced; whatever follows it (&Next=..., a quote, the rest of
+    // the line) is kept. NSString scanning, never Swift character walking
+    // (slow on A5).
+    private static let tokenKeys = ["ApiKey=", "api_key="]
+    private static let tokenEnd = CharacterSet(charactersIn: "&#\"' \t\r\n")
+
     static func redact(_ text: String) -> String {
-        guard text.range(of: "api_key=") != nil else { return text }
-        let parts = text.components(separatedBy: "api_key=")
-        var out = parts[0] + "api_key=***"
-        for part in parts.dropFirst() {
-            // keep whatever followed the token value (&NextParam=...)
-            if let amp = part.range(of: "&") {
-                out += String(part[amp.lowerBound...])
+        let s = NSMutableString(string: text)
+        for key in tokenKeys {
+            var from = 0
+            while from < s.length {
+                let hit = s.range(of: key, options: .caseInsensitive,
+                                  range: NSRange(location: from, length: s.length - from))
+                if hit.location == NSNotFound { break }
+                let start = hit.location + hit.length
+                let end = s.rangeOfCharacter(from: tokenEnd, options: [],
+                                             range: NSRange(location: start, length: s.length - start))
+                let stop = end.location == NSNotFound ? s.length : end.location
+                s.replaceCharacters(in: NSRange(location: start, length: stop - start), with: "***")
+                from = start + 3
             }
         }
-        return out
+        return s as String
     }
 
     func log(_ category: String, _ message: String) {

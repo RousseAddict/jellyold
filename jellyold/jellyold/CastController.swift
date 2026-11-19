@@ -29,7 +29,7 @@ struct CastSubtitle {
               let token = JellyfinServer.accessToken else { return nil }
         let ticks = Int64(max(0, offset) * 10_000_000)
         return CastSession.TextTrack(
-            url: "\(serverURL)/Videos/\(itemId)/\(itemId)/Subtitles/\(index)/\(ticks)/Stream.vtt?api_key=\(token)",
+            url: "\(serverURL)/Videos/\(itemId)/\(itemId)/Subtitles/\(index)/\(ticks)/Stream.vtt?ApiKey=\(token)",
             name: name)
     }
 }
